@@ -1,7 +1,13 @@
-using Skyscreen.Server;
+// Path: Skyscreen.Server/Program.cs
 
-var builder = Host.CreateApplicationBuilder(args);
+using Skyscreen.Server;
+using Skyscreen.Server.Services;
+
+HostApplicationBuilder builder = Host.CreateApplicationBuilder(args);
+
+builder.Services.AddSingleton<ClientSessionManager>();
 builder.Services.AddHostedService<Worker>();
 
-var host = builder.Build();
+IHost host = builder.Build();
+
 host.Run();

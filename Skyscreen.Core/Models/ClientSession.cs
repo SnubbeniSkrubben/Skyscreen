@@ -4,7 +4,7 @@ namespace Skyscreen.Core.Models;
 
 /// <summary>
 /// Beskriver en ansluten Skyscreen-klient, exempelvis en Android-platta.
-/// Varje klient kan vara kopplad till en egen DCS-modul och panel.
+/// En klient kan ha en eller flera aktiva panelprenumerationer.
 /// </summary>
 public sealed class ClientSession
 {
@@ -21,21 +21,22 @@ public sealed class ClientSession
     public string? ClientName { get; init; }
 
     /// <summary>
-    /// ID för vald DCS-modul.
-    /// Exempel: "fa18c".
-    /// </summary>
-    public string? ModuleId { get; init; }
-
-    /// <summary>
-    /// ID för vald cockpitpanel.
-    /// Exempel: "left-ddi".
-    /// </summary>
-    public string? PanelId { get; init; }
-
-    /// <summary>
     /// Vilken transport klienten använder för anslutningen.
     /// </summary>
     public ClientConnectionType ConnectionType { get; init; }
+
+    /// <summary>
+    /// Paneler som klienten för närvarande prenumererar på.
+    ///
+    /// Exempel:
+    /// Tablet-A -> F/A-18C Left DDI
+    /// Tablet-B -> F/A-18C Right DDI
+    ///
+    /// Arkitekturen tillåter även flera panelprenumerationer
+    /// per klient om det behövs i framtiden.
+    /// </summary>
+    public IReadOnlyList<PanelSubscription> Subscriptions { get; init; }
+        = Array.Empty<PanelSubscription>();
 
     /// <summary>
     /// Tidpunkt då klienten anslöt till Skyscreen.Server.
@@ -54,6 +55,14 @@ public sealed class ClientSession
 public enum ClientConnectionType
 {
     Unknown = 0,
+
+    /// <summary>
+    /// Klienten kommunicerar med servern via lokalt nätverk/Wi-Fi.
+    /// </summary>
     Wifi = 1,
+
+    /// <summary>
+    /// Klienten kommunicerar med servern via USB-baserad nätverksanslutning.
+    /// </summary>
     Usb = 2
 }

@@ -1,24 +1,44 @@
-namespace Skyscreen.Server
+// Path: Skyscreen.Server/Worker.cs
+
+using Skyscreen.Server.Services;
+
+namespace Skyscreen.Server;
+
+/// <summary>
+/// Bakgrundstjänst för Skyscreen.Server.
+/// Den kommer senare att hantera bland annat
+/// klientanslutningar, DCS-kommunikation och panelströmmar.
+/// </summary>
+public sealed class Worker : BackgroundService
 {
-    public class Worker : BackgroundService
+    private readonly ILogger<Worker> _logger;
+    private readonly ClientSessionManager _clientSessionManager;
+
+    public Worker(
+        ILogger<Worker> logger,
+        ClientSessionManager clientSessionManager)
     {
-        private readonly ILogger<Worker> _logger;
+        _logger = logger;
+        _clientSessionManager = clientSessionManager;
+    }
 
-        public Worker(ILogger<Worker> logger)
-        {
-            _logger = logger;
-        }
+    /// <summary>
+    /// Huvudloopen för Skyscreen.Server.
+    /// Just nu verifierar den bara att servern startar
+    /// och att ClientSessionManager kan injiceras korrekt.
+    /// </summary>
+    protected override async Task ExecuteAsync(
+        CancellationToken stoppingToken)
+    {
+        _logger.LogInformation(
+            "Skyscreen.Server startad. Aktiva klienter: {ClientCount}",
+            _clientSessionManager.GetAll().Count);
 
-        protected override async Task ExecuteAsync(CancellationToken stoppingToken)
+        while (!stoppingToken.IsCancellationRequested)
         {
-            while (!stoppingToken.IsCancellationRequested)
-            {
-                if (_logger.IsEnabled(LogLevel.Information))
-                {
-                    _logger.LogInformation("Worker running at: {time}", DateTimeOffset.Now);
-                }
-                await Task.Delay(1000, stoppingToken);
-            }
+            await Task.Delay(
+                TimeSpan.FromSeconds(10),
+                stoppingToken);
         }
     }
 }
