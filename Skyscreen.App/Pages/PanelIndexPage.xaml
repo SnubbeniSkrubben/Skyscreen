@@ -1,0 +1,77 @@
+<?xml version="1.0" encoding="utf-8" ?>
+<!-- Path: Skyscreen.App/Pages/PanelIndexPage.xaml -->
+
+<ContentPage
+    x:Class="Skyscreen.App.Pages.PanelIndexPage"
+    xmlns="http://schemas.microsoft.com/dotnet/2021/maui"
+    xmlns:x="http://schemas.microsoft.com/winfx/2009/xaml"
+    Title="Paneler">
+
+    <Grid
+        Padding="24"
+        RowDefinitions="Auto,Auto,*"
+        RowSpacing="20">
+
+        <Label
+            Grid.Row="0"
+            x:Name="ModuleNameLabel"
+            FontAttributes="Bold"
+            FontSize="30"
+            HorizontalOptions="Center" />
+
+        <Label
+            Grid.Row="1"
+            FontSize="18"
+            HorizontalOptions="Center"
+            Text="Välj panel" />
+
+        <CollectionView
+            x:Name="PanelsCollectionView"
+            Grid.Row="2"
+            SelectionMode="Single"
+            SelectionChanged="OnPanelSelectionChanged">
+
+            <CollectionView.ItemsLayout>
+                <GridItemsLayout
+                    Orientation="Vertical"
+                    Span="2" />
+            </CollectionView.ItemsLayout>
+
+            <CollectionView.ItemTemplate>
+                <DataTemplate>
+                    <Border
+                        Margin="8"
+                        Padding="20"
+                        StrokeThickness="1">
+
+                        <VerticalStackLayout Spacing="8">
+
+                            <Label
+                                FontAttributes="Bold"
+                                FontSize="22"
+                                HorizontalTextAlignment="Center"
+                                Text="{Binding DisplayName}" />
+
+                            <Label
+                                FontSize="13"
+                                HorizontalTextAlignment="Center"
+                                Opacity="0.7"
+                                Text="{Binding Type}" />
+
+                            <Label
+                                FontSize="12"
+                                HorizontalTextAlignment="Center"
+                                Opacity="0.6"
+                                Text="{Binding DcsViewportName}" />
+
+                        </VerticalStackLayout>
+
+                    </Border>
+                </DataTemplate>
+            </CollectionView.ItemTemplate>
+
+        </CollectionView>
+
+    </Grid>
+
+</ContentPage>

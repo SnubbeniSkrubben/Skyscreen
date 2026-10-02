@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<!-- Path: Skyscreen.App/AppShell.xaml -->
+
+<Shell
+    x:Class="Skyscreen.App.AppShell"
+    xmlns="http://schemas.microsoft.com/dotnet/2021/maui"
+    xmlns:x="http://schemas.microsoft.com/winfx/2009/xaml"
+    xmlns:pages="clr-namespace:Skyscreen.App.Pages"
+    Title="Skyscreen">
+
+    <ShellContent
+        Title="Modules"
+        ContentTemplate="{DataTemplate pages:ModuleIndexPage}"
+        Route="ModuleIndexPage" />
+
+</Shell>

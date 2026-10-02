@@ -1,0 +1,22 @@
+# Visual Studio
+.vs/
+*.user
+*.suo
+
+# Build output
+bin/
+obj/
+
+# MAUI / Android
+artifacts/
+*.apk
+*.aab
+
+# Logs
+*.log
+
+# OS
+Thumbs.db
+.DS_Store
+
+**/appsettings.Development.json

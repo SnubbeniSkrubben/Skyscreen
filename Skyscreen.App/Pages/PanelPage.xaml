@@ -1,0 +1,63 @@
+<?xml version="1.0" encoding="utf-8" ?>
+<!-- Path: Skyscreen.App/Pages/PanelPage.xaml -->
+
+<ContentPage
+    x:Class="Skyscreen.App.Pages.PanelPage"
+    xmlns="http://schemas.microsoft.com/dotnet/2021/maui"
+    xmlns:x="http://schemas.microsoft.com/winfx/2009/xaml"
+    Title="Panel">
+
+    <Grid
+        Padding="20"
+        RowDefinitions="Auto,Auto,*"
+        RowSpacing="16">
+
+        <Label
+            x:Name="ModuleNameLabel"
+            Grid.Row="0"
+            FontAttributes="Bold"
+            FontSize="28"
+            HorizontalOptions="Center" />
+
+        <Label
+            x:Name="PanelNameLabel"
+            Grid.Row="1"
+            FontSize="20"
+            HorizontalOptions="Center" />
+
+        <Grid
+            Grid.Row="2"
+            HorizontalOptions="Fill"
+            VerticalOptions="Fill">
+
+            <Border
+                StrokeThickness="1"
+                Padding="0"
+                HorizontalOptions="Center"
+                VerticalOptions="Center">
+
+                <Grid
+                    x:Name="PanelSurface"
+                    WidthRequest="700"
+                    HeightRequest="700">
+
+                    <BoxView
+                        Color="Black" />
+
+                    <Label
+                        x:Name="PlaceholderLabel"
+                        Text="MFD LIVE VIEW"
+                        TextColor="White"
+                        FontSize="28"
+                        HorizontalOptions="Center"
+                        VerticalOptions="Center" />
+
+                </Grid>
+
+            </Border>
+
+        </Grid>
+
+    </Grid>
+
+</ContentPage>

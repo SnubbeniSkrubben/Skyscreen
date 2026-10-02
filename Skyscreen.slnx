@@ -1,0 +1,6 @@
+<Solution>
+  <Project Path="Skyscreen.App/Skyscreen.App.csproj" />
+  <Project Path="Skyscreen.Core/Skyscreen.Core.csproj" />
+  <Project Path="Skyscreen.Profiles/Skyscreen.Profiles.csproj" />
+  <Project Path="Skyscreen.Server/Skyscreen.Server.csproj" />
+</Solution>
