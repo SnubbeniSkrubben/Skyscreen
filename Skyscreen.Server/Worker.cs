@@ -34,11 +34,19 @@ public sealed class Worker : BackgroundService
             "Skyscreen.Server startad. Aktiva klienter: {ClientCount}",
             _clientSessionManager.GetAll().Count);
 
-        while (!stoppingToken.IsCancellationRequested)
+        try
         {
-            await Task.Delay(
-                TimeSpan.FromSeconds(10),
-                stoppingToken);
+            while (!stoppingToken.IsCancellationRequested)
+            {
+                await Task.Delay(
+                    TimeSpan.FromSeconds(10),
+                    stoppingToken);
+            }
+        }
+        catch (OperationCanceledException)
+            when (stoppingToken.IsCancellationRequested)
+        {
+            // Normal nedstängning av servern.
         }
     }
 }

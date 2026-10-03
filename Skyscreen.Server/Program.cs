@@ -1,13 +1,67 @@
 // Path: Skyscreen.Server/Program.cs
 
+using Microsoft.AspNetCore.Builder;
+using Microsoft.AspNetCore.Http;
+using Skyscreen.Core.Models;
+using Skyscreen.Core.Protocol;
 using Skyscreen.Server;
 using Skyscreen.Server.Services;
+using Skyscreen.Server.Transport;
 
-HostApplicationBuilder builder = Host.CreateApplicationBuilder(args);
+WebApplicationBuilder builder =
+    WebApplication.CreateBuilder(args);
 
 builder.Services.AddSingleton<ClientSessionManager>();
+
+builder.Services.AddSingleton<
+    ISkyscreenMessageSerializer,
+    JsonSkyscreenMessageSerializer>();
+
+builder.Services.AddSingleton<
+    WebSocketClientConnectionListener>();
+
+builder.Services.AddSingleton<IClientConnectionListener>(
+    serviceProvider =>
+        serviceProvider.GetRequiredService<
+            WebSocketClientConnectionListener>());
+
+builder.Services.AddHostedService<ClientConnectionService>();
 builder.Services.AddHostedService<Worker>();
 
-IHost host = builder.Build();
+string webSocketPath =
+    builder.Configuration["Skyscreen:WebSocket:Path"]
+    ?? "/ws";
 
-host.Run();
+WebApplication app = builder.Build();
+
+app.UseWebSockets();
+
+app.Map(
+    webSocketPath,
+    async context =>
+    {
+        if (!context.WebSockets.IsWebSocketRequest)
+        {
+            context.Response.StatusCode =
+                StatusCodes.Status400BadRequest;
+
+            return;
+        }
+
+        WebSocketClientConnectionListener connectionListener =
+            context.RequestServices.GetRequiredService<
+                WebSocketClientConnectionListener>();
+
+        using System.Net.WebSockets.WebSocket webSocket =
+            await context.WebSockets.AcceptWebSocketAsync();
+
+        IClientConnection connection =
+            await connectionListener.RegisterAsync(
+                webSocket,
+                ClientConnectionType.Wifi,
+                context.RequestAborted);
+
+        await connection.Completion;
+    });
+
+app.Run();

@@ -39,9 +39,11 @@ public sealed class ClientSessionManager
 
         lock (_syncRoot)
         {
-            return _sessions.TryGetValue(clientId, out ClientSession? session)
-                ? session
-                : null;
+            return _sessions.TryGetValue(
+                clientId,
+                out ClientSession? session)
+                    ? session
+                    : null;
         }
     }
 
@@ -62,6 +64,95 @@ public sealed class ClientSessionManager
         lock (_syncRoot)
         {
             _sessions[session.ClientId] = session;
+        }
+    }
+
+    /// <summary>
+    /// Registrerar en ny klient eller återansluter en befintlig klient.
+    ///
+    /// Vid återanslutning bevaras klientens befintliga
+    /// panelprenumerationer.
+    ///
+    /// Hela operationen sker under samma lås så att en samtidig
+    /// sessionsändring inte kan orsaka att prenumerationer tappas.
+    /// </summary>
+    public ClientSession RegisterOrReconnect(
+        string clientId,
+        string? clientName,
+        ClientConnectionType connectionType,
+        DateTimeOffset connectedAtUtc)
+    {
+        if (string.IsNullOrWhiteSpace(clientId))
+        {
+            throw new ArgumentException(
+                "ClientId får inte vara tomt.",
+                nameof(clientId));
+        }
+
+        lock (_syncRoot)
+        {
+            _sessions.TryGetValue(
+                clientId,
+                out ClientSession? currentSession);
+
+            ClientSession updatedSession = new()
+            {
+                ClientId = clientId,
+                ClientName = clientName,
+                ConnectionType = connectionType,
+                ConnectedAtUtc = connectedAtUtc,
+                IsConnected = true,
+                Subscriptions =
+                    currentSession?.Subscriptions.ToArray()
+                    ?? Array.Empty<PanelSubscription>()
+            };
+
+            _sessions[clientId] = updatedSession;
+
+            return updatedSession;
+        }
+    }
+
+    /// <summary>
+    /// Markerar en registrerad klientsession som frånkopplad.
+    ///
+    /// Sessionen och dess panelprenumerationer behålls så att de
+    /// kan återanvändas om samma klient återansluter.
+    /// </summary>
+    public bool MarkDisconnected(string clientId)
+    {
+        if (string.IsNullOrWhiteSpace(clientId))
+        {
+            return false;
+        }
+
+        lock (_syncRoot)
+        {
+            if (!_sessions.TryGetValue(
+                    clientId,
+                    out ClientSession? currentSession))
+            {
+                return false;
+            }
+
+            if (!currentSession.IsConnected)
+            {
+                return true;
+            }
+
+            ClientSession updatedSession = new()
+            {
+                ClientId = currentSession.ClientId,
+                ClientName = currentSession.ClientName,
+                ConnectionType = currentSession.ConnectionType,
+                ConnectedAtUtc = currentSession.ConnectedAtUtc,
+                IsConnected = false,
+                Subscriptions = currentSession.Subscriptions.ToArray()
+            };
+
+            _sessions[clientId] = updatedSession;
+
+            return true;
         }
     }
 

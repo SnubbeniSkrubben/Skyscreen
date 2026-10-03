@@ -29,6 +29,15 @@ public interface IClientConnection : IAsyncDisposable
     ClientConnectionType ConnectionType { get; }
 
     /// <summary>
+    /// Slutförs när anslutningens livscykel har avslutats.
+    ///
+    /// Används exempelvis av transportens host/end-point för att
+    /// hålla den underliggande anslutningen vid liv tills klienten
+    /// kopplar från eller anslutningen stängs av servern.
+    /// </summary>
+    Task Completion { get; }
+
+    /// <summary>
     /// Tar emot nästa logiska Skyscreen-meddelande från klienten.
     ///
     /// Returnerar null om anslutningen avslutas normalt innan
