@@ -73,6 +73,9 @@ public sealed class ClientSessionManager
     /// Vid återanslutning bevaras klientens befintliga
     /// panelprenumerationer.
     ///
+    /// Heartbeat-statusen nollställs eftersom den nya fysiska
+    /// anslutningen ännu inte har skickat någon heartbeat.
+    ///
     /// Hela operationen sker under samma lås så att en samtidig
     /// sessionsändring inte kan orsaka att prenumerationer tappas.
     /// </summary>
@@ -101,6 +104,7 @@ public sealed class ClientSessionManager
                 ClientName = clientName,
                 ConnectionType = connectionType,
                 ConnectedAtUtc = connectedAtUtc,
+                LastHeartbeatAtUtc = null,
                 IsConnected = true,
                 Subscriptions =
                     currentSession?.Subscriptions.ToArray()
@@ -110,6 +114,50 @@ public sealed class ClientSessionManager
             _sessions[clientId] = updatedSession;
 
             return updatedSession;
+        }
+    }
+
+    /// <summary>
+    /// Registrerar tidpunkten då servern senast tog emot ett
+    /// Heartbeat-meddelande från klientens aktuella anslutning.
+    /// </summary>
+    public bool UpdateHeartbeat(
+        string clientId,
+        DateTimeOffset heartbeatAtUtc)
+    {
+        if (string.IsNullOrWhiteSpace(clientId))
+        {
+            return false;
+        }
+
+        lock (_syncRoot)
+        {
+            if (!_sessions.TryGetValue(
+                    clientId,
+                    out ClientSession? currentSession))
+            {
+                return false;
+            }
+
+            if (!currentSession.IsConnected)
+            {
+                return false;
+            }
+
+            ClientSession updatedSession = new()
+            {
+                ClientId = currentSession.ClientId,
+                ClientName = currentSession.ClientName,
+                ConnectionType = currentSession.ConnectionType,
+                ConnectedAtUtc = currentSession.ConnectedAtUtc,
+                LastHeartbeatAtUtc = heartbeatAtUtc,
+                IsConnected = currentSession.IsConnected,
+                Subscriptions = currentSession.Subscriptions.ToArray()
+            };
+
+            _sessions[clientId] = updatedSession;
+
+            return true;
         }
     }
 
@@ -146,6 +194,7 @@ public sealed class ClientSessionManager
                 ClientName = currentSession.ClientName,
                 ConnectionType = currentSession.ConnectionType,
                 ConnectedAtUtc = currentSession.ConnectedAtUtc,
+                LastHeartbeatAtUtc = currentSession.LastHeartbeatAtUtc,
                 IsConnected = false,
                 Subscriptions = currentSession.Subscriptions.ToArray()
             };
@@ -197,6 +246,7 @@ public sealed class ClientSessionManager
                 ClientName = currentSession.ClientName,
                 ConnectionType = currentSession.ConnectionType,
                 ConnectedAtUtc = currentSession.ConnectedAtUtc,
+                LastHeartbeatAtUtc = currentSession.LastHeartbeatAtUtc,
                 IsConnected = currentSession.IsConnected,
                 Subscriptions = subscriptions.ToArray()
             };
@@ -250,6 +300,7 @@ public sealed class ClientSessionManager
                 ClientName = currentSession.ClientName,
                 ConnectionType = currentSession.ConnectionType,
                 ConnectedAtUtc = currentSession.ConnectedAtUtc,
+                LastHeartbeatAtUtc = currentSession.LastHeartbeatAtUtc,
                 IsConnected = currentSession.IsConnected,
                 Subscriptions = subscriptions
             };
@@ -303,6 +354,7 @@ public sealed class ClientSessionManager
                 ClientName = currentSession.ClientName,
                 ConnectionType = currentSession.ConnectionType,
                 ConnectedAtUtc = currentSession.ConnectedAtUtc,
+                LastHeartbeatAtUtc = currentSession.LastHeartbeatAtUtc,
                 IsConnected = currentSession.IsConnected,
                 Subscriptions = subscriptions
             };

@@ -1,6 +1,8 @@
 ﻿// Path: Skyscreen.Server/Services/ClientConnectionService.cs
 
 using System.Collections.Concurrent;
+using Microsoft.AspNetCore.Connections;
+using Microsoft.Extensions.Hosting;
 using Skyscreen.Core.Models;
 using Skyscreen.Core.Protocol;
 using Skyscreen.Server.Transport;
@@ -16,6 +18,7 @@ public sealed class ClientConnectionService : BackgroundService
     private readonly ILogger<ClientConnectionService> _logger;
     private readonly IClientConnectionListener _connectionListener;
     private readonly ClientSessionManager _clientSessionManager;
+    private readonly IHostApplicationLifetime _applicationLifetime;
 
     private readonly ConcurrentDictionary<string, Task> _connectionTasks =
         new(StringComparer.OrdinalIgnoreCase);
@@ -31,11 +34,18 @@ public sealed class ClientConnectionService : BackgroundService
     public ClientConnectionService(
         ILogger<ClientConnectionService> logger,
         IClientConnectionListener connectionListener,
-        ClientSessionManager clientSessionManager)
+        ClientSessionManager clientSessionManager,
+        IHostApplicationLifetime applicationLifetime)
     {
+        ArgumentNullException.ThrowIfNull(logger);
+        ArgumentNullException.ThrowIfNull(connectionListener);
+        ArgumentNullException.ThrowIfNull(clientSessionManager);
+        ArgumentNullException.ThrowIfNull(applicationLifetime);
+
         _logger = logger;
         _connectionListener = connectionListener;
         _clientSessionManager = clientSessionManager;
+        _applicationLifetime = applicationLifetime;
     }
 
     /// <summary>
@@ -139,6 +149,13 @@ public sealed class ClientConnectionService : BackgroundService
             {
                 // Normal nedstängning av servern.
             }
+            catch (ConnectionAbortedException)
+                when (_applicationLifetime.ApplicationStopping.IsCancellationRequested)
+            {
+                // WebSocket-anslutningen aborteras avsiktligt när
+                // serverhosten stängs ned. Detta är en normal del
+                // av serverns kontrollerade nedstängning.
+            }
             catch (ClientConnectionTransportException exception)
             {
                 _logger.LogWarning(
@@ -204,6 +221,13 @@ public sealed class ClientConnectionService : BackgroundService
                 HandleUnsubscribePanel(
                     connection,
                     unsubscribePanel,
+                    registeredClientId);
+
+                return registeredClientId;
+
+            case HeartbeatMessage:
+                HandleHeartbeat(
+                    connection,
                     registeredClientId);
 
                 return registeredClientId;
@@ -444,6 +468,47 @@ public sealed class ClientConnectionService : BackgroundService
                 registeredClientId,
                 message.SubscriptionId);
         }
+    }
+
+    /// <summary>
+    /// Registrerar att den aktuella klientanslutningen fortfarande
+    /// är aktiv genom att uppdatera sessionens heartbeat-tidpunkt.
+    /// </summary>
+    private void HandleHeartbeat(
+        IClientConnection connection,
+        string? registeredClientId)
+    {
+        if (registeredClientId is null)
+        {
+            throw new InvalidOperationException(
+                "ConnectClient måste skickas innan Heartbeat.");
+        }
+
+        DateTimeOffset heartbeatAtUtc =
+            DateTimeOffset.UtcNow;
+
+        lock (_clientConnectionSyncRoot)
+        {
+            EnsureCurrentConnection(
+                registeredClientId,
+                connection.ConnectionId);
+
+            bool updated =
+                _clientSessionManager.UpdateHeartbeat(
+                    registeredClientId,
+                    heartbeatAtUtc);
+
+            if (!updated)
+            {
+                throw new InvalidOperationException(
+                    "Heartbeat kunde inte registreras för klientsessionen.");
+            }
+        }
+
+        _logger.LogDebug(
+            "Heartbeat registrerad. ClientId: {ClientId}, HeartbeatAtUtc: {HeartbeatAtUtc}",
+            registeredClientId,
+            heartbeatAtUtc);
     }
 
     /// <summary>

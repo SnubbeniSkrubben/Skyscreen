@@ -1,4 +1,4 @@
-﻿// Path: Skyscreen.Core.Tests/UnitTest1.cs
+﻿// Path: Skyscreen.Core.Tests/JsonSkyscreenMessageSerializerTests.cs
 
 using Skyscreen.Core.Protocol;
 
@@ -61,6 +61,24 @@ public sealed class JsonSkyscreenMessageSerializerTests
         Assert.Equal(original.PanelId, typedResult.PanelId);
         Assert.Equal(original.ReceiveVideo, typedResult.ReceiveVideo);
         Assert.Equal(original.EnableInput, typedResult.EnableInput);
+    }
+
+    [Fact]
+    public void Heartbeat_roundtrip_bevarar_typ_och_protokollversion()
+    {
+        JsonSkyscreenMessageSerializer serializer = new();
+
+        HeartbeatMessage original = new();
+
+        string json = serializer.Serialize(original);
+
+        SkyscreenMessage result = serializer.Deserialize(json);
+
+        HeartbeatMessage typedResult =
+            Assert.IsType<HeartbeatMessage>(result);
+
+        Assert.Equal(original.ProtocolVersion, typedResult.ProtocolVersion);
+        Assert.Equal(original.MessageType, typedResult.MessageType);
     }
 
     [Fact]

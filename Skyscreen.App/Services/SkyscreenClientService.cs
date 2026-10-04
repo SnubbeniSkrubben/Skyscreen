@@ -14,20 +14,28 @@ namespace Skyscreen.App.Services;
 /// - registrering av stabilt ClientId,
 /// - panelprenumerationer,
 /// - kontinuerlig mottagning av servermeddelanden,
+/// - periodisk heartbeat till servern,
 /// - kontrollerad nedstängning av anslutningen.
 ///
-/// Automatisk återanslutning och heartbeat
-/// implementeras i senare steg.
+/// Automatisk återanslutning implementeras i ett senare steg.
 /// </summary>
 public sealed class SkyscreenClientService : ISkyscreenClientService
 {
+    private static readonly TimeSpan HeartbeatInterval =
+        TimeSpan.FromSeconds(5);
+
     private readonly IClientConnectionFactory _connectionFactory;
     private readonly ILogger<SkyscreenClientService> _logger;
     private readonly SemaphoreSlim _connectionLock = new(1, 1);
 
     private IClientConnection? _connection;
+
     private CancellationTokenSource? _receiveLoopCancellation;
     private Task? _receiveLoopTask;
+
+    private CancellationTokenSource? _heartbeatLoopCancellation;
+    private Task? _heartbeatLoopTask;
+
     private bool _disposed;
 
     public SkyscreenClientService(
@@ -60,8 +68,8 @@ public sealed class SkyscreenClientService : ISkyscreenClientService
     /// Etablerar anslutningen till servern och registrerar klienten
     /// med ett ConnectClient-meddelande.
     ///
-    /// När registreringsmeddelandet har skickats startas även appens
-    /// mottagningsloop för servermeddelanden.
+    /// När registreringsmeddelandet har skickats startas appens
+    /// mottagningsloop och periodiska heartbeat-loop.
     /// </summary>
     public async Task ConnectAsync(
         Uri endpoint,
@@ -85,12 +93,17 @@ public sealed class SkyscreenClientService : ISkyscreenClientService
             if (_connection is not null)
             {
                 _receiveLoopCancellation?.Cancel();
+                _heartbeatLoopCancellation?.Cancel();
 
                 await _connection.DisposeAsync();
 
                 _connection = null;
+
                 _receiveLoopCancellation = null;
                 _receiveLoopTask = null;
+
+                _heartbeatLoopCancellation = null;
+                _heartbeatLoopTask = null;
             }
 
             IClientConnection connection =
@@ -110,14 +123,26 @@ public sealed class SkyscreenClientService : ISkyscreenClientService
                 CancellationTokenSource receiveLoopCancellation =
                     new();
 
+                CancellationTokenSource heartbeatLoopCancellation =
+                    new();
+
                 _connection = connection;
+
                 _receiveLoopCancellation =
                     receiveLoopCancellation;
+
+                _heartbeatLoopCancellation =
+                    heartbeatLoopCancellation;
 
                 _receiveLoopTask =
                     ReceiveLoopAsync(
                         connection,
                         receiveLoopCancellation);
+
+                _heartbeatLoopTask =
+                    HeartbeatLoopAsync(
+                        connection,
+                        heartbeatLoopCancellation);
             }
             catch
             {
@@ -241,37 +266,51 @@ public sealed class SkyscreenClientService : ISkyscreenClientService
 
     /// <summary>
     /// Avslutar den aktuella anslutningen och stoppar
-    /// mottagningsloopen.
+    /// mottagnings- och heartbeat-looparna.
     /// </summary>
     public async Task DisconnectAsync()
     {
         IClientConnection? connection;
+
         CancellationTokenSource? receiveLoopCancellation;
         Task? receiveLoopTask;
+
+        CancellationTokenSource? heartbeatLoopCancellation;
+        Task? heartbeatLoopTask;
 
         await _connectionLock.WaitAsync();
 
         try
         {
             connection = _connection;
+
             receiveLoopCancellation =
                 _receiveLoopCancellation;
+
             receiveLoopTask =
                 _receiveLoopTask;
 
+            heartbeatLoopCancellation =
+                _heartbeatLoopCancellation;
+
+            heartbeatLoopTask =
+                _heartbeatLoopTask;
+
             _connection = null;
+
             _receiveLoopCancellation = null;
             _receiveLoopTask = null;
+
+            _heartbeatLoopCancellation = null;
+            _heartbeatLoopTask = null;
         }
         finally
         {
             _connectionLock.Release();
         }
 
-        if (receiveLoopCancellation is not null)
-        {
-            receiveLoopCancellation.Cancel();
-        }
+        receiveLoopCancellation?.Cancel();
+        heartbeatLoopCancellation?.Cancel();
 
         if (receiveLoopTask is not null)
         {
@@ -289,6 +328,24 @@ public sealed class SkyscreenClientService : ISkyscreenClientService
         else
         {
             receiveLoopCancellation?.Dispose();
+        }
+
+        if (heartbeatLoopTask is not null)
+        {
+            try
+            {
+                await heartbeatLoopTask;
+            }
+            catch (Exception exception)
+            {
+                _logger.LogWarning(
+                    exception,
+                    "Skyscreen-klientens heartbeat-loop kunde inte avslutas normalt.");
+            }
+        }
+        else
+        {
+            heartbeatLoopCancellation?.Dispose();
         }
 
         if (connection is not null)
@@ -357,6 +414,58 @@ public sealed class SkyscreenClientService : ISkyscreenClientService
     }
 
     /// <summary>
+    /// Skickar periodiskt Heartbeat-meddelanden så länge den
+    /// aktuella transportanslutningen är aktiv.
+    /// </summary>
+    private async Task HeartbeatLoopAsync(
+        IClientConnection connection,
+        CancellationTokenSource cancellationSource)
+    {
+        using PeriodicTimer timer =
+            new(HeartbeatInterval);
+
+        try
+        {
+            while (await timer.WaitForNextTickAsync(
+                       cancellationSource.Token))
+            {
+                if (!connection.IsConnected)
+                {
+                    break;
+                }
+
+                await connection.SendAsync(
+                    new HeartbeatMessage(),
+                    cancellationSource.Token);
+
+                _logger.LogDebug(
+                    "Heartbeat skickad till Skyscreen.Server.");
+            }
+        }
+        catch (OperationCanceledException)
+            when (cancellationSource.IsCancellationRequested)
+        {
+            // Normal nedstängning av heartbeat-loopen.
+        }
+        catch (ClientConnectionTransportException exception)
+        {
+            _logger.LogWarning(
+                exception,
+                "Heartbeat kunde inte skickas eftersom transportanslutningen bröts.");
+        }
+        catch (Exception exception)
+        {
+            _logger.LogError(
+                exception,
+                "Ett oväntat fel inträffade i Skyscreen-klientens heartbeat-loop.");
+        }
+        finally
+        {
+            cancellationSource.Dispose();
+        }
+    }
+
+    /// <summary>
     /// Rensar den aktiva anslutningen när mottagningsloopen
     /// avslutas på serverns eller transportens initiativ.
     ///
@@ -368,6 +477,7 @@ public sealed class SkyscreenClientService : ISkyscreenClientService
         CancellationTokenSource cancellationSource)
     {
         bool disposeConnection = false;
+        CancellationTokenSource? heartbeatLoopCancellation = null;
 
         await _connectionLock.WaitAsync();
 
@@ -387,6 +497,13 @@ public sealed class SkyscreenClientService : ISkyscreenClientService
                 }
 
                 _receiveLoopTask = null;
+
+                heartbeatLoopCancellation =
+                    _heartbeatLoopCancellation;
+
+                _heartbeatLoopCancellation = null;
+                _heartbeatLoopTask = null;
+
                 disposeConnection = true;
             }
         }
@@ -394,6 +511,8 @@ public sealed class SkyscreenClientService : ISkyscreenClientService
         {
             _connectionLock.Release();
         }
+
+        heartbeatLoopCancellation?.Cancel();
 
         try
         {

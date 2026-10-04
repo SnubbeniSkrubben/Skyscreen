@@ -2,6 +2,7 @@
 
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Http;
+using Microsoft.Extensions.Hosting;
 using Skyscreen.Core.Models;
 using Skyscreen.Core.Protocol;
 using Skyscreen.Server;
@@ -52,8 +53,21 @@ app.Map(
             context.RequestServices.GetRequiredService<
                 WebSocketClientConnectionListener>();
 
+        IHostApplicationLifetime applicationLifetime =
+            context.RequestServices.GetRequiredService<
+                IHostApplicationLifetime>();
+
         using System.Net.WebSockets.WebSocket webSocket =
             await context.WebSockets.AcceptWebSocketAsync();
+
+        // En aktiv WebSocket-request får inte blockera serverns
+        // kontrollerade nedstängning. När hosten börjar stoppa
+        // avbryts därför transporten direkt så att serverns
+        // anslutningshantering kan avslutas utan att invänta
+        // Kestrels shutdown-timeout.
+        using CancellationTokenRegistration stoppingRegistration =
+            applicationLifetime.ApplicationStopping.Register(
+                webSocket.Abort);
 
         IClientConnection connection =
             await connectionListener.RegisterAsync(

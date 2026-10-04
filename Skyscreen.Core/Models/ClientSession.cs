@@ -44,6 +44,14 @@ public sealed class ClientSession
     public DateTimeOffset ConnectedAtUtc { get; init; }
 
     /// <summary>
+    /// Tidpunkt då servern senast tog emot ett Heartbeat-meddelande
+    /// från den aktuella klientanslutningen.
+    ///
+    /// Värdet är null tills den första heartbeat-signalen har mottagits.
+    /// </summary>
+    public DateTimeOffset? LastHeartbeatAtUtc { get; init; }
+
+    /// <summary>
     /// Anger om klienten fortfarande betraktas som ansluten.
     /// </summary>
     public bool IsConnected { get; init; } = true;

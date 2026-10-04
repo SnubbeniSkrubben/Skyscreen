@@ -20,6 +20,9 @@ public sealed class WebSocketClientConnection : IClientConnection
     private readonly ClientWebSocket _webSocket;
     private readonly ISkyscreenMessageSerializer _serializer;
 
+    private readonly SemaphoreSlim _sendLock =
+        new(1, 1);
+
     private readonly TaskCompletionSource<bool> _completion =
         new(TaskCreationOptions.RunContinuationsAsynchronously);
 
@@ -103,28 +106,37 @@ public sealed class WebSocketClientConnection : IClientConnection
     {
         ArgumentNullException.ThrowIfNull(message);
 
-        if (_webSocket.State != WebSocketState.Open)
-        {
-            throw new InvalidOperationException(
-                "WebSocket-anslutningen är inte öppen.");
-        }
-
-        string data = _serializer.Serialize(message);
-        byte[] payload = Encoding.UTF8.GetBytes(data);
+        await _sendLock.WaitAsync(cancellationToken);
 
         try
         {
-            await _webSocket.SendAsync(
-                new ArraySegment<byte>(payload),
-                WebSocketMessageType.Text,
-                endOfMessage: true,
-                cancellationToken);
+            if (_webSocket.State != WebSocketState.Open)
+            {
+                throw new InvalidOperationException(
+                    "WebSocket-anslutningen är inte öppen.");
+            }
+
+            string data = _serializer.Serialize(message);
+            byte[] payload = Encoding.UTF8.GetBytes(data);
+
+            try
+            {
+                await _webSocket.SendAsync(
+                    new ArraySegment<byte>(payload),
+                    WebSocketMessageType.Text,
+                    endOfMessage: true,
+                    cancellationToken);
+            }
+            catch (WebSocketException exception)
+            {
+                throw new ClientConnectionTransportException(
+                    "WebSocket-anslutningen kunde inte skicka data.",
+                    exception);
+            }
         }
-        catch (WebSocketException exception)
+        finally
         {
-            throw new ClientConnectionTransportException(
-                "WebSocket-anslutningen kunde inte skicka data.",
-                exception);
+            _sendLock.Release();
         }
     }
 
