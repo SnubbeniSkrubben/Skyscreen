@@ -5,9 +5,9 @@ namespace Skyscreen.App.Services;
 /// <summary>
 /// Hanterar Skyscreen.Apps logiska anslutning till Skyscreen.Server.
 ///
-/// Tjänsten ska använda det transportoberoende anslutningslagret och
-/// ansvarar för klientregistrering och senare protokollflöden som
-/// panelprenumerationer och återanslutning.
+/// Tjänsten använder det transportoberoende anslutningslagret och
+/// ansvarar för klientregistrering, panelprenumerationer och senare
+/// protokollflöden som återanslutning.
 /// </summary>
 public interface ISkyscreenClientService : IAsyncDisposable
 {
@@ -26,6 +26,28 @@ public interface ISkyscreenClientService : IAsyncDisposable
     /// </summary>
     Task ConnectAsync(
         Uri endpoint,
+        CancellationToken cancellationToken);
+
+    /// <summary>
+    /// Skapar eller uppdaterar en panelprenumeration för klienten.
+    ///
+    /// SubscriptionId ska stabilt identifiera den logiska
+    /// prenumerationen så att samma prenumeration senare kan
+    /// uppdateras eller avslutas.
+    /// </summary>
+    Task SubscribePanelAsync(
+        string subscriptionId,
+        string moduleId,
+        string panelId,
+        bool receiveVideo,
+        bool enableInput,
+        CancellationToken cancellationToken);
+
+    /// <summary>
+    /// Avslutar den angivna panelprenumerationen.
+    /// </summary>
+    Task UnsubscribePanelAsync(
+        string subscriptionId,
         CancellationToken cancellationToken);
 
     /// <summary>

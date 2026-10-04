@@ -12,10 +12,11 @@ namespace Skyscreen.App.Services;
 /// Tjänsten ansvarar för:
 /// - etablering av transportanslutning,
 /// - registrering av stabilt ClientId,
+/// - panelprenumerationer,
 /// - kontinuerlig mottagning av servermeddelanden,
 /// - kontrollerad nedstängning av anslutningen.
 ///
-/// Automatisk återanslutning, heartbeat och panelprenumerationer
+/// Automatisk återanslutning och heartbeat
 /// implementeras i senare steg.
 /// </summary>
 public sealed class SkyscreenClientService : ISkyscreenClientService
@@ -123,6 +124,114 @@ public sealed class SkyscreenClientService : ISkyscreenClientService
                 await connection.DisposeAsync();
                 throw;
             }
+        }
+        finally
+        {
+            _connectionLock.Release();
+        }
+    }
+
+    /// <summary>
+    /// Skapar eller uppdaterar en panelprenumeration
+    /// för den aktuella klienten.
+    /// </summary>
+    public async Task SubscribePanelAsync(
+        string subscriptionId,
+        string moduleId,
+        string panelId,
+        bool receiveVideo,
+        bool enableInput,
+        CancellationToken cancellationToken)
+    {
+        ObjectDisposedException.ThrowIf(
+            _disposed,
+            this);
+
+        if (string.IsNullOrWhiteSpace(subscriptionId))
+        {
+            throw new ArgumentException(
+                "SubscriptionId får inte vara tomt.",
+                nameof(subscriptionId));
+        }
+
+        if (string.IsNullOrWhiteSpace(moduleId))
+        {
+            throw new ArgumentException(
+                "ModuleId får inte vara tomt.",
+                nameof(moduleId));
+        }
+
+        if (string.IsNullOrWhiteSpace(panelId))
+        {
+            throw new ArgumentException(
+                "PanelId får inte vara tomt.",
+                nameof(panelId));
+        }
+
+        await _connectionLock.WaitAsync(cancellationToken);
+
+        try
+        {
+            if (_connection?.IsConnected != true)
+            {
+                throw new InvalidOperationException(
+                    "Klienten måste vara ansluten innan en panelprenumeration kan skapas.");
+            }
+
+            await _connection.SendAsync(
+                new SubscribePanelMessage
+                {
+                    SubscriptionId = subscriptionId,
+                    ClientId = ClientId,
+                    ModuleId = moduleId,
+                    PanelId = panelId,
+                    ReceiveVideo = receiveVideo,
+                    EnableInput = enableInput
+                },
+                cancellationToken);
+        }
+        finally
+        {
+            _connectionLock.Release();
+        }
+    }
+
+    /// <summary>
+    /// Avslutar den angivna panelprenumerationen
+    /// för den aktuella klienten.
+    /// </summary>
+    public async Task UnsubscribePanelAsync(
+        string subscriptionId,
+        CancellationToken cancellationToken)
+    {
+        ObjectDisposedException.ThrowIf(
+            _disposed,
+            this);
+
+        if (string.IsNullOrWhiteSpace(subscriptionId))
+        {
+            throw new ArgumentException(
+                "SubscriptionId får inte vara tomt.",
+                nameof(subscriptionId));
+        }
+
+        await _connectionLock.WaitAsync(cancellationToken);
+
+        try
+        {
+            if (_connection?.IsConnected != true)
+            {
+                throw new InvalidOperationException(
+                    "Klienten måste vara ansluten innan en panelprenumeration kan avslutas.");
+            }
+
+            await _connection.SendAsync(
+                new UnsubscribePanelMessage
+                {
+                    ClientId = ClientId,
+                    SubscriptionId = subscriptionId
+                },
+                cancellationToken);
         }
         finally
         {
