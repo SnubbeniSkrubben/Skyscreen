@@ -1,47 +1,67 @@
 ﻿// Path: Skyscreen.App/Services/SkyscreenClientService.cs
 
+using Microsoft.Extensions.Logging;
 using Skyscreen.App.Transport;
 using Skyscreen.Core.Protocol;
 
 namespace Skyscreen.App.Services;
 
 /// <summary>
-/// Hanterar Skyscreen.Apps logiska anslutning till Skyscreen.Server.
+/// Hanterar appens logiska anslutning till Skyscreen.Server.
 ///
-/// Tjänsten använder ett transportoberoende anslutningslager och
-/// registrerar klienten med ConnectClient när transportanslutningen
-/// har etablerats.
+/// Tjänsten ansvarar för:
+/// - etablering av transportanslutning,
+/// - registrering av stabilt ClientId,
+/// - kontinuerlig mottagning av servermeddelanden,
+/// - kontrollerad nedstängning av anslutningen.
+///
+/// Automatisk återanslutning, heartbeat och panelprenumerationer
+/// implementeras i senare steg.
 /// </summary>
 public sealed class SkyscreenClientService : ISkyscreenClientService
 {
     private readonly IClientConnectionFactory _connectionFactory;
+    private readonly ILogger<SkyscreenClientService> _logger;
     private readonly SemaphoreSlim _connectionLock = new(1, 1);
 
     private IClientConnection? _connection;
+    private CancellationTokenSource? _receiveLoopCancellation;
+    private Task? _receiveLoopTask;
     private bool _disposed;
 
-    /// <summary>
-    /// Skapar klientservicen.
-    /// </summary>
     public SkyscreenClientService(
         IClientConnectionFactory connectionFactory,
-        IClientIdentityProvider clientIdentityProvider)
+        IClientIdentityProvider clientIdentityProvider,
+        ILogger<SkyscreenClientService> logger)
     {
         ArgumentNullException.ThrowIfNull(connectionFactory);
         ArgumentNullException.ThrowIfNull(clientIdentityProvider);
+        ArgumentNullException.ThrowIfNull(logger);
 
         _connectionFactory = connectionFactory;
+        _logger = logger;
+
         ClientId = clientIdentityProvider.GetOrCreateClientId();
     }
 
-    /// <inheritdoc />
+    /// <summary>
+    /// Anger om den aktuella transportanslutningen är öppen.
+    /// </summary>
     public bool IsConnected =>
         _connection?.IsConnected == true;
 
-    /// <inheritdoc />
+    /// <summary>
+    /// Stabil identifierare för den här appinstallationen.
+    /// </summary>
     public string ClientId { get; }
 
-    /// <inheritdoc />
+    /// <summary>
+    /// Etablerar anslutningen till servern och registrerar klienten
+    /// med ett ConnectClient-meddelande.
+    ///
+    /// När registreringsmeddelandet har skickats startas även appens
+    /// mottagningsloop för servermeddelanden.
+    /// </summary>
     public async Task ConnectAsync(
         Uri endpoint,
         CancellationToken cancellationToken)
@@ -63,8 +83,13 @@ public sealed class SkyscreenClientService : ISkyscreenClientService
 
             if (_connection is not null)
             {
+                _receiveLoopCancellation?.Cancel();
+
                 await _connection.DisposeAsync();
+
                 _connection = null;
+                _receiveLoopCancellation = null;
+                _receiveLoopTask = null;
             }
 
             IClientConnection connection =
@@ -81,7 +106,17 @@ public sealed class SkyscreenClientService : ISkyscreenClientService
                     },
                     cancellationToken);
 
+                CancellationTokenSource receiveLoopCancellation =
+                    new();
+
                 _connection = connection;
+                _receiveLoopCancellation =
+                    receiveLoopCancellation;
+
+                _receiveLoopTask =
+                    ReceiveLoopAsync(
+                        connection,
+                        receiveLoopCancellation);
             }
             catch
             {
@@ -95,28 +130,179 @@ public sealed class SkyscreenClientService : ISkyscreenClientService
         }
     }
 
-    /// <inheritdoc />
+    /// <summary>
+    /// Avslutar den aktuella anslutningen och stoppar
+    /// mottagningsloopen.
+    /// </summary>
     public async Task DisconnectAsync()
     {
+        IClientConnection? connection;
+        CancellationTokenSource? receiveLoopCancellation;
+        Task? receiveLoopTask;
+
         await _connectionLock.WaitAsync();
 
         try
         {
-            if (_connection is null)
-            {
-                return;
-            }
+            connection = _connection;
+            receiveLoopCancellation =
+                _receiveLoopCancellation;
+            receiveLoopTask =
+                _receiveLoopTask;
 
-            await _connection.DisposeAsync();
             _connection = null;
+            _receiveLoopCancellation = null;
+            _receiveLoopTask = null;
         }
         finally
         {
             _connectionLock.Release();
         }
+
+        if (receiveLoopCancellation is not null)
+        {
+            receiveLoopCancellation.Cancel();
+        }
+
+        if (receiveLoopTask is not null)
+        {
+            try
+            {
+                await receiveLoopTask;
+            }
+            catch (Exception exception)
+            {
+                _logger.LogWarning(
+                    exception,
+                    "Skyscreen-klientens mottagningsloop kunde inte avslutas normalt.");
+            }
+        }
+        else
+        {
+            receiveLoopCancellation?.Dispose();
+        }
+
+        if (connection is not null)
+        {
+            await connection.DisposeAsync();
+        }
     }
 
-    /// <inheritdoc />
+    /// <summary>
+    /// Lyssnar kontinuerligt efter logiska Skyscreen-meddelanden
+    /// från servern tills anslutningen avslutas eller mottagningen
+    /// avbryts.
+    /// </summary>
+    private async Task ReceiveLoopAsync(
+        IClientConnection connection,
+        CancellationTokenSource cancellationSource)
+    {
+        try
+        {
+            while (!cancellationSource.IsCancellationRequested)
+            {
+                SkyscreenMessage? message =
+                    await connection.ReceiveAsync(
+                        cancellationSource.Token);
+
+                if (message is null)
+                {
+                    _logger.LogInformation(
+                        "Skyscreen.Server avslutade klientanslutningen.");
+
+                    break;
+                }
+
+                _logger.LogDebug(
+                    "Meddelande mottaget från Skyscreen.Server: {MessageType}",
+                    message.MessageType);
+
+                // Själva hanteringen av inkommande meddelanden
+                // implementeras stegvis när respektive funktion
+                // införs, exempelvis ServerStatus.
+            }
+        }
+        catch (OperationCanceledException)
+            when (cancellationSource.IsCancellationRequested)
+        {
+            // Normal nedstängning av mottagningsloopen.
+        }
+        catch (ClientConnectionTransportException exception)
+        {
+            _logger.LogWarning(
+                exception,
+                "Transportanslutningen till Skyscreen.Server bröts.");
+        }
+        catch (Exception exception)
+        {
+            _logger.LogError(
+                exception,
+                "Ett oväntat fel inträffade i Skyscreen-klientens mottagningsloop.");
+        }
+        finally
+        {
+            await HandleReceiveLoopCompletedAsync(
+                connection,
+                cancellationSource);
+        }
+    }
+
+    /// <summary>
+    /// Rensar den aktiva anslutningen när mottagningsloopen
+    /// avslutas på serverns eller transportens initiativ.
+    ///
+    /// Om anslutningen redan har kopplats bort eller ersatts
+    /// påverkas inte den nya anslutningen.
+    /// </summary>
+    private async Task HandleReceiveLoopCompletedAsync(
+        IClientConnection connection,
+        CancellationTokenSource cancellationSource)
+    {
+        bool disposeConnection = false;
+
+        await _connectionLock.WaitAsync();
+
+        try
+        {
+            if (ReferenceEquals(
+                    _connection,
+                    connection))
+            {
+                _connection = null;
+
+                if (ReferenceEquals(
+                        _receiveLoopCancellation,
+                        cancellationSource))
+                {
+                    _receiveLoopCancellation = null;
+                }
+
+                _receiveLoopTask = null;
+                disposeConnection = true;
+            }
+        }
+        finally
+        {
+            _connectionLock.Release();
+        }
+
+        try
+        {
+            if (disposeConnection)
+            {
+                await connection.DisposeAsync();
+            }
+        }
+        finally
+        {
+            cancellationSource.Dispose();
+        }
+    }
+
+    /// <summary>
+    /// Frigör klienttjänstens resurser och avslutar
+    /// eventuell aktiv anslutning.
+    /// </summary>
     public async ValueTask DisposeAsync()
     {
         if (_disposed)
