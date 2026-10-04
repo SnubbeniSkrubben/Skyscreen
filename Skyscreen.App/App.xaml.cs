@@ -30,7 +30,8 @@ namespace Skyscreen.App
         protected override Window CreateWindow(
             IActivationState? activationState)
         {
-            Window window = new(new AppShell());
+            Window window =
+                new(new AppShell(_clientService));
 
             window.Created += OnWindowCreated;
 

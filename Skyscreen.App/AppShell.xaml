@@ -9,6 +9,7 @@
     Title="Skyscreen">
 
     <ShellContent
+        x:Name="ModuleIndexShellContent"
         Title="Modules"
         ContentTemplate="{DataTemplate pages:ModuleIndexPage}"
         Route="ModuleIndexPage" />
