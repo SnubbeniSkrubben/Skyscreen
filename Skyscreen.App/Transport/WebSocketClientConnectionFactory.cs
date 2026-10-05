@@ -12,6 +12,9 @@ namespace Skyscreen.App.Transport;
 public sealed class WebSocketClientConnectionFactory
     : IClientConnectionFactory
 {
+    private static readonly TimeSpan ConnectionTimeout =
+        TimeSpan.FromSeconds(3);
+
     private readonly ISkyscreenMessageSerializer _serializer;
 
     /// <summary>
@@ -43,15 +46,32 @@ public sealed class WebSocketClientConnectionFactory
 
         ClientWebSocket webSocket = new();
 
+        using CancellationTokenSource connectionCancellation =
+            CancellationTokenSource.CreateLinkedTokenSource(
+                cancellationToken);
+
+        connectionCancellation.CancelAfter(
+            ConnectionTimeout);
+
         try
         {
             await webSocket.ConnectAsync(
                 endpoint,
-                cancellationToken);
+                connectionCancellation.Token);
 
             return new WebSocketClientConnection(
                 webSocket,
                 _serializer);
+        }
+        catch (OperationCanceledException exception)
+            when (!cancellationToken.IsCancellationRequested
+                  && connectionCancellation.IsCancellationRequested)
+        {
+            webSocket.Dispose();
+
+            throw new ClientConnectionTransportException(
+                $"WebSocket-anslutningen till '{endpoint}' överskred tidsgränsen på {ConnectionTimeout.TotalSeconds:0} sekunder.",
+                exception);
         }
         catch (WebSocketException exception)
         {

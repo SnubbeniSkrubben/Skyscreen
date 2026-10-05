@@ -70,14 +70,12 @@ public sealed class ClientSessionManager
     /// <summary>
     /// Registrerar en ny klient eller återansluter en befintlig klient.
     ///
-    /// Vid återanslutning bevaras klientens befintliga
-    /// panelprenumerationer.
+    /// Varje ny fysisk anslutning börjar utan serverregistrerade
+    /// panelprenumerationer. Klienten ansvarar för att efter
+    /// återanslutning registrera de paneler som fortfarande önskas.
     ///
     /// Heartbeat-statusen nollställs eftersom den nya fysiska
     /// anslutningen ännu inte har skickat någon heartbeat.
-    ///
-    /// Hela operationen sker under samma lås så att en samtidig
-    /// sessionsändring inte kan orsaka att prenumerationer tappas.
     /// </summary>
     public ClientSession RegisterOrReconnect(
         string clientId,
@@ -94,10 +92,6 @@ public sealed class ClientSessionManager
 
         lock (_syncRoot)
         {
-            _sessions.TryGetValue(
-                clientId,
-                out ClientSession? currentSession);
-
             ClientSession updatedSession = new()
             {
                 ClientId = clientId,
@@ -106,9 +100,7 @@ public sealed class ClientSessionManager
                 ConnectedAtUtc = connectedAtUtc,
                 LastHeartbeatAtUtc = null,
                 IsConnected = true,
-                Subscriptions =
-                    currentSession?.Subscriptions.ToArray()
-                    ?? Array.Empty<PanelSubscription>()
+                Subscriptions = Array.Empty<PanelSubscription>()
             };
 
             _sessions[clientId] = updatedSession;
@@ -164,8 +156,11 @@ public sealed class ClientSessionManager
     /// <summary>
     /// Markerar en registrerad klientsession som frånkopplad.
     ///
-    /// Sessionen och dess panelprenumerationer behålls så att de
-    /// kan återanvändas om samma klient återansluter.
+    /// Sessionen och dess panelprenumerationer behålls medan klienten
+    /// är frånkopplad så att servern kan beskriva dess senaste tillstånd.
+    ///
+    /// Vid en ny fysisk anslutning börjar klientens prenumerationslista
+    /// däremot tom och klienten registrerar önskat paneltillstånd på nytt.
     /// </summary>
     public bool MarkDisconnected(string clientId)
     {

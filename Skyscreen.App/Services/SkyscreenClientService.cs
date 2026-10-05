@@ -12,21 +12,28 @@ namespace Skyscreen.App.Services;
 /// Tjänsten ansvarar för:
 /// - etablering av transportanslutning,
 /// - registrering av stabilt ClientId,
-/// - panelprenumerationer,
+/// - klientens önskade panelprenumerationer,
 /// - kontinuerlig mottagning av servermeddelanden,
 /// - periodisk heartbeat till servern,
+/// - automatisk återanslutning efter transportavbrott,
+/// - återställning av önskade panelprenumerationer,
 /// - kontrollerad nedstängning av anslutningen.
-///
-/// Automatisk återanslutning implementeras i ett senare steg.
 /// </summary>
 public sealed class SkyscreenClientService : ISkyscreenClientService
 {
     private static readonly TimeSpan HeartbeatInterval =
         TimeSpan.FromSeconds(5);
 
+    private static readonly TimeSpan ReconnectDelay =
+        TimeSpan.FromSeconds(2);
+
     private readonly IClientConnectionFactory _connectionFactory;
     private readonly ILogger<SkyscreenClientService> _logger;
     private readonly SemaphoreSlim _connectionLock = new(1, 1);
+
+    private readonly Dictionary<string, DesiredPanelSubscription>
+        _desiredSubscriptions =
+            new(StringComparer.OrdinalIgnoreCase);
 
     private IClientConnection? _connection;
 
@@ -36,6 +43,11 @@ public sealed class SkyscreenClientService : ISkyscreenClientService
     private CancellationTokenSource? _heartbeatLoopCancellation;
     private Task? _heartbeatLoopTask;
 
+    private CancellationTokenSource? _reconnectLoopCancellation;
+    private Task? _reconnectLoopTask;
+
+    private Uri? _serverEndpoint;
+    private bool _automaticReconnectEnabled;
     private bool _disposed;
 
     public SkyscreenClientService(
@@ -68,8 +80,11 @@ public sealed class SkyscreenClientService : ISkyscreenClientService
     /// Etablerar anslutningen till servern och registrerar klienten
     /// med ett ConnectClient-meddelande.
     ///
-    /// När registreringsmeddelandet har skickats startas appens
-    /// mottagningsloop och periodiska heartbeat-loop.
+    /// Endpointen sparas så att samma server senare kan användas
+    /// vid automatisk återanslutning.
+    ///
+    /// Om det första anslutningsförsöket misslyckas startas
+    /// återanslutningsloopen ändå.
     /// </summary>
     public async Task ConnectAsync(
         Uri endpoint,
@@ -85,10 +100,15 @@ public sealed class SkyscreenClientService : ISkyscreenClientService
 
         try
         {
+            _serverEndpoint = endpoint;
+            _automaticReconnectEnabled = true;
+
             if (_connection?.IsConnected == true)
             {
                 return;
             }
+
+            CancelReconnectLoopLocked();
 
             if (_connection is not null)
             {
@@ -106,47 +126,15 @@ public sealed class SkyscreenClientService : ISkyscreenClientService
                 _heartbeatLoopTask = null;
             }
 
-            IClientConnection connection =
-                await _connectionFactory.ConnectAsync(
-                    endpoint,
-                    cancellationToken);
-
             try
             {
-                await connection.SendAsync(
-                    new ConnectClientMessage
-                    {
-                        ClientId = ClientId
-                    },
+                await ConnectCoreLockedAsync(
+                    endpoint,
                     cancellationToken);
-
-                CancellationTokenSource receiveLoopCancellation =
-                    new();
-
-                CancellationTokenSource heartbeatLoopCancellation =
-                    new();
-
-                _connection = connection;
-
-                _receiveLoopCancellation =
-                    receiveLoopCancellation;
-
-                _heartbeatLoopCancellation =
-                    heartbeatLoopCancellation;
-
-                _receiveLoopTask =
-                    ReceiveLoopAsync(
-                        connection,
-                        receiveLoopCancellation);
-
-                _heartbeatLoopTask =
-                    HeartbeatLoopAsync(
-                        connection,
-                        heartbeatLoopCancellation);
             }
             catch
             {
-                await connection.DisposeAsync();
+                StartReconnectLoopLocked();
                 throw;
             }
         }
@@ -157,8 +145,11 @@ public sealed class SkyscreenClientService : ISkyscreenClientService
     }
 
     /// <summary>
-    /// Skapar eller uppdaterar en panelprenumeration
-    /// för den aktuella klienten.
+    /// Registrerar att appen önskar en viss panelprenumeration.
+    ///
+    /// Det önskade tillståndet sparas även om transportanslutningen
+    /// för tillfället är nere. Vid återanslutning registrerar appen
+    /// därför exakt de paneler som fortfarande önskas.
     /// </summary>
     public async Task SubscribePanelAsync(
         string subscriptionId,
@@ -197,23 +188,51 @@ public sealed class SkyscreenClientService : ISkyscreenClientService
 
         try
         {
-            if (_connection?.IsConnected != true)
+            DesiredPanelSubscription desiredSubscription =
+                new(
+                    subscriptionId,
+                    moduleId,
+                    panelId,
+                    receiveVideo,
+                    enableInput);
+
+            _desiredSubscriptions[subscriptionId] =
+                desiredSubscription;
+
+            IClientConnection? connection =
+                _connection;
+
+            if (connection?.IsConnected != true)
             {
-                throw new InvalidOperationException(
-                    "Klienten måste vara ansluten innan en panelprenumeration kan skapas.");
+                _logger.LogDebug(
+                    "Panelprenumerationen {SubscriptionId} sparades lokalt och skickas när serveranslutningen är tillgänglig.",
+                    subscriptionId);
+
+                return;
             }
 
-            await _connection.SendAsync(
-                new SubscribePanelMessage
-                {
-                    SubscriptionId = subscriptionId,
-                    ClientId = ClientId,
-                    ModuleId = moduleId,
-                    PanelId = panelId,
-                    ReceiveVideo = receiveVideo,
-                    EnableInput = enableInput
-                },
-                cancellationToken);
+            try
+            {
+                await SendSubscriptionAsync(
+                    connection,
+                    desiredSubscription,
+                    cancellationToken);
+            }
+            catch (ClientConnectionTransportException exception)
+            {
+                _logger.LogWarning(
+                    exception,
+                    "Panelprenumerationen {SubscriptionId} sparades lokalt men kunde inte skickas eftersom transportanslutningen bröts.",
+                    subscriptionId);
+            }
+            catch (InvalidOperationException exception)
+                when (!connection.IsConnected)
+            {
+                _logger.LogWarning(
+                    exception,
+                    "Panelprenumerationen {SubscriptionId} sparades lokalt men transportanslutningen hann stängas innan den kunde skickas.",
+                    subscriptionId);
+            }
         }
         finally
         {
@@ -222,8 +241,13 @@ public sealed class SkyscreenClientService : ISkyscreenClientService
     }
 
     /// <summary>
-    /// Avslutar den angivna panelprenumerationen
-    /// för den aktuella klienten.
+    /// Tar bort den angivna panelprenumerationen från appens
+    /// önskade tillstånd.
+    ///
+    /// Om servern är ansluten skickas även UnsubscribePanel direkt.
+    /// Om servern är frånkopplad räcker det att ta bort det lokala
+    /// önskade tillståndet, eftersom en framtida serveranslutning
+    /// börjar med tom prenumerationslista.
     /// </summary>
     public async Task UnsubscribePanelAsync(
         string subscriptionId,
@@ -244,19 +268,42 @@ public sealed class SkyscreenClientService : ISkyscreenClientService
 
         try
         {
-            if (_connection?.IsConnected != true)
+            _desiredSubscriptions.Remove(
+                subscriptionId);
+
+            IClientConnection? connection =
+                _connection;
+
+            if (connection?.IsConnected != true)
             {
-                throw new InvalidOperationException(
-                    "Klienten måste vara ansluten innan en panelprenumeration kan avslutas.");
+                return;
             }
 
-            await _connection.SendAsync(
-                new UnsubscribePanelMessage
-                {
-                    ClientId = ClientId,
-                    SubscriptionId = subscriptionId
-                },
-                cancellationToken);
+            try
+            {
+                await connection.SendAsync(
+                    new UnsubscribePanelMessage
+                    {
+                        ClientId = ClientId,
+                        SubscriptionId = subscriptionId
+                    },
+                    cancellationToken);
+            }
+            catch (ClientConnectionTransportException exception)
+            {
+                _logger.LogWarning(
+                    exception,
+                    "Panelprenumerationen {SubscriptionId} togs bort lokalt men UnsubscribePanel kunde inte skickas eftersom transportanslutningen bröts.",
+                    subscriptionId);
+            }
+            catch (InvalidOperationException exception)
+                when (!connection.IsConnected)
+            {
+                _logger.LogWarning(
+                    exception,
+                    "Panelprenumerationen {SubscriptionId} togs bort lokalt men transportanslutningen hann stängas innan UnsubscribePanel kunde skickas.",
+                    subscriptionId);
+            }
         }
         finally
         {
@@ -266,7 +313,10 @@ public sealed class SkyscreenClientService : ISkyscreenClientService
 
     /// <summary>
     /// Avslutar den aktuella anslutningen och stoppar
-    /// mottagnings- och heartbeat-looparna.
+    /// mottagnings-, heartbeat- och återanslutningslooparna.
+    ///
+    /// Ett uttryckligt DisconnectAsync innebär att automatisk
+    /// återanslutning inte längre ska ske.
     /// </summary>
     public async Task DisconnectAsync()
     {
@@ -278,10 +328,16 @@ public sealed class SkyscreenClientService : ISkyscreenClientService
         CancellationTokenSource? heartbeatLoopCancellation;
         Task? heartbeatLoopTask;
 
+        CancellationTokenSource? reconnectLoopCancellation;
+        Task? reconnectLoopTask;
+
         await _connectionLock.WaitAsync();
 
         try
         {
+            _automaticReconnectEnabled = false;
+            _serverEndpoint = null;
+
             connection = _connection;
 
             receiveLoopCancellation =
@@ -296,6 +352,12 @@ public sealed class SkyscreenClientService : ISkyscreenClientService
             heartbeatLoopTask =
                 _heartbeatLoopTask;
 
+            reconnectLoopCancellation =
+                _reconnectLoopCancellation;
+
+            reconnectLoopTask =
+                _reconnectLoopTask;
+
             _connection = null;
 
             _receiveLoopCancellation = null;
@@ -303,6 +365,9 @@ public sealed class SkyscreenClientService : ISkyscreenClientService
 
             _heartbeatLoopCancellation = null;
             _heartbeatLoopTask = null;
+
+            _reconnectLoopCancellation = null;
+            _reconnectLoopTask = null;
         }
         finally
         {
@@ -311,6 +376,7 @@ public sealed class SkyscreenClientService : ISkyscreenClientService
 
         receiveLoopCancellation?.Cancel();
         heartbeatLoopCancellation?.Cancel();
+        reconnectLoopCancellation?.Cancel();
 
         if (receiveLoopTask is not null)
         {
@@ -348,9 +414,99 @@ public sealed class SkyscreenClientService : ISkyscreenClientService
             heartbeatLoopCancellation?.Dispose();
         }
 
+        if (reconnectLoopTask is not null)
+        {
+            try
+            {
+                await reconnectLoopTask;
+            }
+            catch (Exception exception)
+            {
+                _logger.LogWarning(
+                    exception,
+                    "Skyscreen-klientens återanslutningsloop kunde inte avslutas normalt.");
+            }
+        }
+        else
+        {
+            reconnectLoopCancellation?.Dispose();
+        }
+
         if (connection is not null)
         {
             await connection.DisposeAsync();
+        }
+    }
+
+    /// <summary>
+    /// Etablerar en fysisk anslutning, registrerar ClientId och
+    /// återställer appens aktuella önskade panelprenumerationer.
+    ///
+    /// Metoden anropas endast medan _connectionLock hålls.
+    /// </summary>
+    private async Task ConnectCoreLockedAsync(
+        Uri endpoint,
+        CancellationToken cancellationToken)
+    {
+        IClientConnection connection =
+            await _connectionFactory.ConnectAsync(
+                endpoint,
+                cancellationToken);
+
+        try
+        {
+            await connection.SendAsync(
+                new ConnectClientMessage
+                {
+                    ClientId = ClientId
+                },
+                cancellationToken);
+
+            DesiredPanelSubscription[] subscriptions =
+                _desiredSubscriptions.Values
+                    .ToArray();
+
+            foreach (DesiredPanelSubscription subscription
+                     in subscriptions)
+            {
+                await SendSubscriptionAsync(
+                    connection,
+                    subscription,
+                    cancellationToken);
+            }
+
+            CancellationTokenSource receiveLoopCancellation =
+                new();
+
+            CancellationTokenSource heartbeatLoopCancellation =
+                new();
+
+            _connection = connection;
+
+            _receiveLoopCancellation =
+                receiveLoopCancellation;
+
+            _heartbeatLoopCancellation =
+                heartbeatLoopCancellation;
+
+            _receiveLoopTask =
+                ReceiveLoopAsync(
+                    connection,
+                    receiveLoopCancellation);
+
+            _heartbeatLoopTask =
+                HeartbeatLoopAsync(
+                    connection,
+                    heartbeatLoopCancellation);
+
+            _logger.LogInformation(
+                "Skyscreen-klientanslutningen etablerad. Återställda panelprenumerationer: {SubscriptionCount}",
+                subscriptions.Length);
+        }
+        catch
+        {
+            await connection.DisposeAsync();
+            throw;
         }
     }
 
@@ -466,6 +622,192 @@ public sealed class SkyscreenClientService : ISkyscreenClientService
     }
 
     /// <summary>
+    /// Försöker återansluta till den senast använda serverendpointen
+    /// tills anslutningen lyckas eller återanslutningen avbryts.
+    /// </summary>
+    private async Task ReconnectLoopAsync(
+        Uri endpoint,
+        CancellationTokenSource cancellationSource)
+    {
+        try
+        {
+            while (!cancellationSource.IsCancellationRequested)
+            {
+                await Task.Delay(
+                    ReconnectDelay,
+                    cancellationSource.Token);
+
+                try
+                {
+                    await _connectionLock.WaitAsync(
+                        cancellationSource.Token);
+
+                    try
+                    {
+                        if (_disposed
+                            || !_automaticReconnectEnabled)
+                        {
+                            ClearReconnectLoopStateLocked(
+                                cancellationSource);
+
+                            return;
+                        }
+
+                        if (_connection?.IsConnected == true)
+                        {
+                            ClearReconnectLoopStateLocked(
+                                cancellationSource);
+
+                            return;
+                        }
+
+                        await ConnectCoreLockedAsync(
+                            endpoint,
+                            cancellationSource.Token);
+
+                        ClearReconnectLoopStateLocked(
+                            cancellationSource);
+                    }
+                    finally
+                    {
+                        _connectionLock.Release();
+                    }
+
+                    _logger.LogInformation(
+                        "Skyscreen.App återansluten till servern {Endpoint}. ClientId: {ClientId}",
+                        endpoint,
+                        ClientId);
+
+                    return;
+                }
+                catch (OperationCanceledException)
+                    when (cancellationSource.IsCancellationRequested)
+                {
+                    return;
+                }
+                catch (Exception exception)
+                {
+                    _logger.LogDebug(
+                        exception,
+                        "Återanslutningsförsök till Skyscreen.Server misslyckades. Nytt försök görs om {ReconnectDelaySeconds} sekunder.",
+                        ReconnectDelay.TotalSeconds);
+                }
+            }
+        }
+        catch (OperationCanceledException)
+            when (cancellationSource.IsCancellationRequested)
+        {
+            // Normal avbrytning av återanslutningsloopen.
+        }
+        finally
+        {
+            await _connectionLock.WaitAsync();
+
+            try
+            {
+                ClearReconnectLoopStateLocked(
+                    cancellationSource);
+            }
+            finally
+            {
+                _connectionLock.Release();
+                cancellationSource.Dispose();
+            }
+        }
+    }
+
+    /// <summary>
+    /// Startar återanslutningsloopen om den är aktiverad och
+    /// ingen annan återanslutningsloop redan körs.
+    ///
+    /// Metoden anropas endast medan _connectionLock hålls.
+    /// </summary>
+    private void StartReconnectLoopLocked()
+    {
+        if (_disposed
+            || !_automaticReconnectEnabled
+            || _serverEndpoint is null)
+        {
+            return;
+        }
+
+        if (_reconnectLoopTask is not null
+            && !_reconnectLoopTask.IsCompleted)
+        {
+            return;
+        }
+
+        CancellationTokenSource cancellationSource =
+            new();
+
+        _reconnectLoopCancellation =
+            cancellationSource;
+
+        _reconnectLoopTask =
+            ReconnectLoopAsync(
+                _serverEndpoint,
+                cancellationSource);
+    }
+
+    /// <summary>
+    /// Avbryter en pågående återanslutningsloop.
+    ///
+    /// Metoden anropas endast medan _connectionLock hålls.
+    /// </summary>
+    private void CancelReconnectLoopLocked()
+    {
+        CancellationTokenSource? cancellationSource =
+            _reconnectLoopCancellation;
+
+        _reconnectLoopCancellation = null;
+        _reconnectLoopTask = null;
+
+        cancellationSource?.Cancel();
+    }
+
+    /// <summary>
+    /// Rensar reconnect-referenserna endast om de fortfarande
+    /// tillhör den angivna återanslutningsloopen.
+    ///
+    /// Metoden anropas endast medan _connectionLock hålls.
+    /// </summary>
+    private void ClearReconnectLoopStateLocked(
+        CancellationTokenSource cancellationSource)
+    {
+        if (!ReferenceEquals(
+                _reconnectLoopCancellation,
+                cancellationSource))
+        {
+            return;
+        }
+
+        _reconnectLoopCancellation = null;
+        _reconnectLoopTask = null;
+    }
+
+    /// <summary>
+    /// Skickar en önskad panelprenumeration till den
+    /// angivna transportanslutningen.
+    /// </summary>
+    private Task SendSubscriptionAsync(
+        IClientConnection connection,
+        DesiredPanelSubscription subscription,
+        CancellationToken cancellationToken)
+    {
+        return connection.SendAsync(
+            new SubscribePanelMessage
+            {
+                SubscriptionId = subscription.SubscriptionId,
+                ClientId = ClientId,
+                ModuleId = subscription.ModuleId,
+                PanelId = subscription.PanelId,
+                ReceiveVideo = subscription.ReceiveVideo,
+                EnableInput = subscription.EnableInput
+            },
+            cancellationToken);
+    }
+
+    /// <summary>
     /// Rensar den aktiva anslutningen när mottagningsloopen
     /// avslutas på serverns eller transportens initiativ.
     ///
@@ -505,6 +847,8 @@ public sealed class SkyscreenClientService : ISkyscreenClientService
                 _heartbeatLoopTask = null;
 
                 disposeConnection = true;
+
+                StartReconnectLoopLocked();
             }
         }
         finally
@@ -544,4 +888,17 @@ public sealed class SkyscreenClientService : ISkyscreenClientService
 
         _connectionLock.Dispose();
     }
+
+    /// <summary>
+    /// Beskriver en panelprenumeration som appen önskar ska vara aktiv.
+    ///
+    /// Modellen är medvetet lokal för appens klienttjänst och beskriver
+    /// inte serverns aktuella sessionsstatus.
+    /// </summary>
+    private sealed record DesiredPanelSubscription(
+        string SubscriptionId,
+        string ModuleId,
+        string PanelId,
+        bool ReceiveVideo,
+        bool EnableInput);
 }

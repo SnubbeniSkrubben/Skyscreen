@@ -21,7 +21,7 @@ public partial class PanelPage : ContentPage
 
     private AircraftModule? _module;
     private PanelDefinition? _panel;
-    private bool _isSubscribed;
+    private bool _isSubscriptionDesired;
 
     /// <summary>
     /// Befintlig konstruktor som behålls tillfälligt medan
@@ -97,7 +97,11 @@ public partial class PanelPage : ContentPage
     }
 
     /// <summary>
-    /// Startar panelens logiska prenumeration när sidan blir aktiv.
+    /// Registrerar att panelens prenumeration önskas när sidan
+    /// blir aktiv.
+    ///
+    /// Klienttjänsten ansvarar för om prenumerationen kan skickas
+    /// direkt eller ska sparas tills serveranslutningen är tillgänglig.
     /// </summary>
     protected override async void OnAppearing()
     {
@@ -105,8 +109,7 @@ public partial class PanelPage : ContentPage
 
         if (_panel is null
             || _clientService is null
-            || _isSubscribed
-            || !_clientService.IsConnected)
+            || _isSubscriptionDesired)
         {
             return;
         }
@@ -121,41 +124,41 @@ public partial class PanelPage : ContentPage
                 ShouldEnableInput(_panel),
                 CancellationToken.None);
 
-            _isSubscribed = true;
+            _isSubscriptionDesired = true;
         }
         catch (Exception exception)
         {
             Debug.WriteLine(
-                $"Skyscreen: panelprenumerationen kunde inte startas. {exception}");
+                $"Skyscreen: panelprenumerationen kunde inte registreras som önskad. {exception}");
         }
     }
 
     /// <summary>
-    /// Avslutar panelens logiska prenumeration när sidan
+    /// Tar bort panelens önskade prenumeration när sidan
     /// inte längre är aktiv.
+    ///
+    /// Detta görs oavsett om serveranslutningen för tillfället
+    /// är tillgänglig eller inte.
     /// </summary>
     protected override async void OnDisappearing()
     {
         if (_clientService is not null
-            && _isSubscribed)
+            && _isSubscriptionDesired)
         {
             try
             {
-                if (_clientService.IsConnected)
-                {
-                    await _clientService.UnsubscribePanelAsync(
-                        _subscriptionId,
-                        CancellationToken.None);
-                }
+                await _clientService.UnsubscribePanelAsync(
+                    _subscriptionId,
+                    CancellationToken.None);
             }
             catch (Exception exception)
             {
                 Debug.WriteLine(
-                    $"Skyscreen: panelprenumerationen kunde inte avslutas. {exception}");
+                    $"Skyscreen: panelprenumerationen kunde inte tas bort från önskat tillstånd. {exception}");
             }
             finally
             {
-                _isSubscribed = false;
+                _isSubscriptionDesired = false;
             }
         }
 
