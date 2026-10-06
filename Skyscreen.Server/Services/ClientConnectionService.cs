@@ -16,6 +16,9 @@ namespace Skyscreen.Server.Services;
 /// </summary>
 public sealed class ClientConnectionService : BackgroundService
 {
+    private static readonly TimeSpan HeartbeatTimeout =
+        TimeSpan.FromSeconds(15);
+
     private readonly ILogger<ClientConnectionService> _logger;
     private readonly IClientConnectionListener _connectionListener;
     private readonly ClientSessionManager _clientSessionManager;
@@ -118,15 +121,19 @@ public sealed class ClientConnectionService : BackgroundService
     {
         string? registeredClientId = null;
 
+        using CancellationTokenSource connectionCancellation =
+            CancellationTokenSource.CreateLinkedTokenSource(
+                stoppingToken);
+
         await using (connection)
         {
             try
             {
-                while (!stoppingToken.IsCancellationRequested)
+                while (!connectionCancellation.IsCancellationRequested)
                 {
                     SkyscreenMessage? message =
                         await connection.ReceiveAsync(
-                            stoppingToken);
+                            connectionCancellation.Token);
 
                     if (message is null)
                     {
@@ -143,13 +150,39 @@ public sealed class ClientConnectionService : BackgroundService
                             connection,
                             message,
                             registeredClientId,
-                            stoppingToken);
+                            connectionCancellation.Token);
+
+                    if (registeredClientId is not null &&
+                        (message is ConnectClientMessage ||
+                         message is HeartbeatMessage))
+                    {
+                        connectionCancellation.CancelAfter(
+                            HeartbeatTimeout);
+                    }
                 }
             }
             catch (OperationCanceledException)
                 when (stoppingToken.IsCancellationRequested)
             {
                 // Normal nedstängning av servern.
+            }
+            catch (OperationCanceledException)
+                when (connectionCancellation.IsCancellationRequested)
+            {
+                if (registeredClientId is not null)
+                {
+                    _logger.LogWarning(
+                        "Heartbeat-timeout. ClientId: {ClientId}, ConnectionId: {ConnectionId}, TimeoutSeconds: {TimeoutSeconds}",
+                        registeredClientId,
+                        connection.ConnectionId,
+                        HeartbeatTimeout.TotalSeconds);
+                }
+                else
+                {
+                    _logger.LogWarning(
+                        "Klientanslutningen {ConnectionId} avbröts av anslutningens timeout innan klienten registrerades.",
+                        connection.ConnectionId);
+                }
             }
             catch (ConnectionAbortedException)
                 when (_applicationLifetime.ApplicationStopping.IsCancellationRequested)

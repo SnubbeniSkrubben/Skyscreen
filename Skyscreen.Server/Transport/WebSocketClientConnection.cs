@@ -16,6 +16,9 @@ public sealed class WebSocketClientConnection : IClientConnection
 {
     private const int ReceiveBufferSize = 4096;
 
+    private static readonly TimeSpan CloseTimeout =
+        TimeSpan.FromSeconds(2);
+
     private readonly WebSocket _webSocket;
     private readonly ISkyscreenMessageSerializer _serializer;
 
@@ -147,16 +150,27 @@ public sealed class WebSocketClientConnection : IClientConnection
             if (_webSocket.State is WebSocketState.Open
                 or WebSocketState.CloseReceived)
             {
+                using CancellationTokenSource closeCancellation =
+                    new(CloseTimeout);
+
                 try
                 {
                     await _webSocket.CloseAsync(
                         WebSocketCloseStatus.NormalClosure,
                         "Skyscreen-anslutningen avslutas.",
-                        CancellationToken.None);
+                        closeCancellation.Token);
+                }
+                catch (OperationCanceledException)
+                    when (closeCancellation.IsCancellationRequested)
+                {
+                    // En klient som inte svarar på close-handshake får
+                    // inte blockera serverns anslutningslivscykel.
+                    _webSocket.Abort();
                 }
                 catch (WebSocketException)
                 {
                     // Anslutningen kan redan ha brutits på transportnivå.
+                    _webSocket.Abort();
                 }
             }
         }
@@ -165,7 +179,7 @@ public sealed class WebSocketClientConnection : IClientConnection
             _webSocket.Dispose();
 
             // Completion signaleras först när transportens hela
-            // nedstängning och close-handshake är färdig.
+            // nedstängning är färdig.
             _completion.TrySetResult(true);
         }
     }
