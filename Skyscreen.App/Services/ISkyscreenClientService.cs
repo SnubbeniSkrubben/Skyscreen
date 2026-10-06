@@ -1,13 +1,15 @@
 ﻿// Path: Skyscreen.App/Services/ISkyscreenClientService.cs
 
+using Skyscreen.Core.Protocol;
+
 namespace Skyscreen.App.Services;
 
 /// <summary>
 /// Hanterar Skyscreen.Apps logiska anslutning till Skyscreen.Server.
 ///
 /// Tjänsten använder det transportoberoende anslutningslagret och
-/// ansvarar för klientregistrering, panelprenumerationer och senare
-/// protokollflöden som återanslutning.
+/// ansvarar för klientregistrering, panelprenumerationer,
+/// anslutningsstatus och serverstatus.
 /// </summary>
 public interface ISkyscreenClientService : IAsyncDisposable
 {
@@ -17,24 +19,42 @@ public interface ISkyscreenClientService : IAsyncDisposable
     bool IsConnected { get; }
 
     /// <summary>
+    /// Appens aktuella logiska anslutningstillstånd mot servern.
+    /// </summary>
+    SkyscreenConnectionState ConnectionState { get; }
+
+    /// <summary>
+    /// Senast mottagna status från servern.
+    ///
+    /// Är null tills ett ServerStatus-meddelande har mottagits
+    /// på den aktuella serveranslutningen.
+    /// </summary>
+    ServerStatusMessage? ServerStatus { get; }
+
+    /// <summary>
     /// Klientens stabila ClientId.
     /// </summary>
     string ClientId { get; }
 
     /// <summary>
-    /// Ansluter till servern och registrerar klienten med ConnectClient.
+    /// Utlöses när appens logiska anslutningstillstånd ändras.
+    ///
+    /// Det aktuella tillståndet läses från ConnectionState.
     /// </summary>
+    event EventHandler? ConnectionStateChanged;
+
+    /// <summary>
+    /// Utlöses när ett nytt ServerStatus-meddelande har mottagits
+    /// eller när tidigare serverstatus inte längre är giltig.
+    ///
+    /// Aktuell status läses från ServerStatus.
+    /// </summary>
+    event EventHandler? ServerStatusChanged;
+
     Task ConnectAsync(
         Uri endpoint,
         CancellationToken cancellationToken);
 
-    /// <summary>
-    /// Skapar eller uppdaterar en panelprenumeration för klienten.
-    ///
-    /// SubscriptionId ska stabilt identifiera den logiska
-    /// prenumerationen så att samma prenumeration senare kan
-    /// uppdateras eller avslutas.
-    /// </summary>
     Task SubscribePanelAsync(
         string subscriptionId,
         string moduleId,
@@ -43,15 +63,9 @@ public interface ISkyscreenClientService : IAsyncDisposable
         bool enableInput,
         CancellationToken cancellationToken);
 
-    /// <summary>
-    /// Avslutar den angivna panelprenumerationen.
-    /// </summary>
     Task UnsubscribePanelAsync(
         string subscriptionId,
         CancellationToken cancellationToken);
 
-    /// <summary>
-    /// Kopplar från den aktuella serveranslutningen.
-    /// </summary>
     Task DisconnectAsync();
 }

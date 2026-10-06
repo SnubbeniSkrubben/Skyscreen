@@ -1,6 +1,7 @@
 ﻿// Path: Skyscreen.Server/Services/ClientConnectionService.cs
 
 using System.Collections.Concurrent;
+using System.Reflection;
 using Microsoft.AspNetCore.Connections;
 using Microsoft.Extensions.Hosting;
 using Skyscreen.Core.Models;
@@ -138,10 +139,11 @@ public sealed class ClientConnectionService : BackgroundService
                         message.MessageType);
 
                     registeredClientId =
-                        HandleMessage(
+                        await HandleMessageAsync(
                             connection,
                             message,
-                            registeredClientId);
+                            registeredClientId,
+                            stoppingToken);
                 }
             }
             catch (OperationCanceledException)
@@ -196,18 +198,20 @@ public sealed class ClientConnectionService : BackgroundService
     /// Routar ett mottaget protokollmeddelande till rätt serverlogik.
     /// Returnerar det ClientId som är bundet till anslutningen.
     /// </summary>
-    private string? HandleMessage(
+    private async Task<string?> HandleMessageAsync(
         IClientConnection connection,
         SkyscreenMessage message,
-        string? registeredClientId)
+        string? registeredClientId,
+        CancellationToken cancellationToken)
     {
         switch (message)
         {
             case ConnectClientMessage connectClient:
-                return HandleConnectClient(
+                return await HandleConnectClientAsync(
                     connection,
                     connectClient,
-                    registeredClientId);
+                    registeredClientId,
+                    cancellationToken);
 
             case SubscribePanelMessage subscribePanel:
                 HandleSubscribePanel(
@@ -247,10 +251,11 @@ public sealed class ClientConnectionService : BackgroundService
     /// En fysisk anslutning får inte byta ClientId efter att den
     /// har registrerats.
     /// </summary>
-    private string HandleConnectClient(
+    private async Task<string> HandleConnectClientAsync(
         IClientConnection connection,
         ConnectClientMessage message,
-        string? registeredClientId)
+        string? registeredClientId,
+        CancellationToken cancellationToken)
     {
         if (registeredClientId is not null)
         {
@@ -280,6 +285,10 @@ public sealed class ClientConnectionService : BackgroundService
 
             // Ett upprepat ConnectClient från samma aktuella
             // anslutning behöver inte registrera sessionen på nytt.
+            await SendServerStatusAsync(
+                connection,
+                cancellationToken);
+
             return registeredClientId;
         }
 
@@ -303,7 +312,56 @@ public sealed class ClientConnectionService : BackgroundService
             session.ClientId,
             session.Subscriptions.Count);
 
+        await SendServerStatusAsync(
+            connection,
+            cancellationToken);
+
         return session.ClientId;
+    }
+
+    /// <summary>
+    /// Skickar serverns aktuella status till den registrerade klienten.
+    ///
+    /// DCS-status är null tills faktisk DCS-detektering har
+    /// implementerats och kan ge ett verifierat svar.
+    /// </summary>
+    private async Task SendServerStatusAsync(
+        IClientConnection connection,
+        CancellationToken cancellationToken)
+    {
+        await connection.SendAsync(
+            new ServerStatusMessage
+            {
+                ServerVersion = GetServerVersion(),
+                IsDcsRunning = null,
+                ActiveModuleId = null
+            },
+            cancellationToken);
+
+        _logger.LogDebug(
+            "ServerStatus skickad till klientanslutningen {ConnectionId}.",
+            connection.ConnectionId);
+    }
+
+    /// <summary>
+    /// Hämtar serverversionen från assemblyns versionsmetadata.
+    /// </summary>
+    private static string GetServerVersion()
+    {
+        Assembly assembly =
+            typeof(ClientConnectionService).Assembly;
+
+        string? informationalVersion =
+            assembly.GetCustomAttribute<AssemblyInformationalVersionAttribute>()
+                ?.InformationalVersion;
+
+        if (!string.IsNullOrWhiteSpace(informationalVersion))
+        {
+            return informationalVersion;
+        }
+
+        return assembly.GetName().Version?.ToString()
+            ?? "unknown";
     }
 
     /// <summary>

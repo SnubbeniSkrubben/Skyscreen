@@ -17,9 +17,11 @@ public sealed class ServerStatusMessage : SkyscreenMessage
     public required string ServerVersion { get; init; }
 
     /// <summary>
-    /// Anger om DCS för närvarande är tillgängligt för servern.
+    /// Anger om DCS för närvarande kör.
+    ///
+    /// Null innebär att servern ännu inte kan avgöra DCS-status.
     /// </summary>
-    public bool IsDcsRunning { get; init; }
+    public bool? IsDcsRunning { get; init; }
 
     /// <summary>
     /// ID för den DCS-modul som servern har identifierat som aktiv.

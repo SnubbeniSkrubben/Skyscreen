@@ -17,6 +17,8 @@ namespace Skyscreen.App.Services;
 /// - periodisk heartbeat till servern,
 /// - automatisk återanslutning efter transportavbrott,
 /// - återställning av önskade panelprenumerationer,
+/// - anslutningsstatus för UI,
+/// - mottagning av ServerStatus,
 /// - kontrollerad nedstängning av anslutningen.
 /// </summary>
 public sealed class SkyscreenClientService : ISkyscreenClientService
@@ -50,6 +52,11 @@ public sealed class SkyscreenClientService : ISkyscreenClientService
     private bool _automaticReconnectEnabled;
     private bool _disposed;
 
+    private SkyscreenConnectionState _connectionState =
+        SkyscreenConnectionState.Disconnected;
+
+    private ServerStatusMessage? _serverStatus;
+
     public SkyscreenClientService(
         IClientConnectionFactory connectionFactory,
         IClientIdentityProvider clientIdentityProvider,
@@ -72,9 +79,34 @@ public sealed class SkyscreenClientService : ISkyscreenClientService
         _connection?.IsConnected == true;
 
     /// <summary>
+    /// Appens aktuella logiska anslutningstillstånd mot servern.
+    /// </summary>
+    public SkyscreenConnectionState ConnectionState =>
+        _connectionState;
+
+    /// <summary>
+    /// Senast mottagna status från den aktuella serveranslutningen.
+    ///
+    /// Är null när ingen giltig ServerStatus finns.
+    /// </summary>
+    public ServerStatusMessage? ServerStatus =>
+        _serverStatus;
+
+    /// <summary>
     /// Stabil identifierare för den här appinstallationen.
     /// </summary>
     public string ClientId { get; }
+
+    /// <summary>
+    /// Utlöses när appens logiska anslutningstillstånd ändras.
+    /// </summary>
+    public event EventHandler? ConnectionStateChanged;
+
+    /// <summary>
+    /// Utlöses när ett nytt ServerStatus-meddelande tas emot
+    /// eller när tidigare serverstatus inte längre är giltig.
+    /// </summary>
+    public event EventHandler? ServerStatusChanged;
 
     /// <summary>
     /// Etablerar anslutningen till servern och registrerar klienten
@@ -96,6 +128,11 @@ public sealed class SkyscreenClientService : ISkyscreenClientService
             _disposed,
             this);
 
+        SetConnectionState(
+            SkyscreenConnectionState.Connecting);
+
+        ClearServerStatus();
+
         await _connectionLock.WaitAsync(cancellationToken);
 
         try
@@ -105,6 +142,9 @@ public sealed class SkyscreenClientService : ISkyscreenClientService
 
             if (_connection?.IsConnected == true)
             {
+                SetConnectionState(
+                    SkyscreenConnectionState.Connected);
+
                 return;
             }
 
@@ -135,6 +175,10 @@ public sealed class SkyscreenClientService : ISkyscreenClientService
             catch
             {
                 StartReconnectLoopLocked();
+
+                SetConnectionState(
+                    SkyscreenConnectionState.Reconnecting);
+
                 throw;
             }
         }
@@ -374,6 +418,11 @@ public sealed class SkyscreenClientService : ISkyscreenClientService
             _connectionLock.Release();
         }
 
+        SetConnectionState(
+            SkyscreenConnectionState.Disconnected);
+
+        ClearServerStatus();
+
         receiveLoopCancellation?.Cancel();
         heartbeatLoopCancellation?.Cancel();
         reconnectLoopCancellation?.Cancel();
@@ -499,6 +548,9 @@ public sealed class SkyscreenClientService : ISkyscreenClientService
                     connection,
                     heartbeatLoopCancellation);
 
+            SetConnectionState(
+                SkyscreenConnectionState.Connected);
+
             _logger.LogInformation(
                 "Skyscreen-klientanslutningen etablerad. Återställda panelprenumerationer: {SubscriptionCount}",
                 subscriptions.Length);
@@ -539,9 +591,17 @@ public sealed class SkyscreenClientService : ISkyscreenClientService
                     "Meddelande mottaget från Skyscreen.Server: {MessageType}",
                     message.MessageType);
 
-                // Själva hanteringen av inkommande meddelanden
-                // implementeras stegvis när respektive funktion
-                // införs, exempelvis ServerStatus.
+                if (message is ServerStatusMessage serverStatus)
+                {
+                    SetServerStatus(
+                        serverStatus);
+
+                    _logger.LogInformation(
+                        "ServerStatus mottagen. ServerVersion: {ServerVersion}, DcsStatus: {DcsStatus}, ActiveModuleId: {ActiveModuleId}",
+                        serverStatus.ServerVersion,
+                        serverStatus.IsDcsRunning,
+                        serverStatus.ActiveModuleId);
+                }
             }
         }
         catch (OperationCanceledException)
@@ -655,6 +715,9 @@ public sealed class SkyscreenClientService : ISkyscreenClientService
 
                         if (_connection?.IsConnected == true)
                         {
+                            SetConnectionState(
+                                SkyscreenConnectionState.Connected);
+
                             ClearReconnectLoopStateLocked(
                                 cancellationSource);
 
@@ -687,6 +750,9 @@ public sealed class SkyscreenClientService : ISkyscreenClientService
                 }
                 catch (Exception exception)
                 {
+                    SetConnectionState(
+                        SkyscreenConnectionState.Reconnecting);
+
                     _logger.LogDebug(
                         exception,
                         "Återanslutningsförsök till Skyscreen.Server misslyckades. Nytt försök görs om {ReconnectDelaySeconds} sekunder.",
@@ -747,6 +813,9 @@ public sealed class SkyscreenClientService : ISkyscreenClientService
             ReconnectLoopAsync(
                 _serverEndpoint,
                 cancellationSource);
+
+        SetConnectionState(
+            SkyscreenConnectionState.Reconnecting);
     }
 
     /// <summary>
@@ -819,6 +888,7 @@ public sealed class SkyscreenClientService : ISkyscreenClientService
         CancellationTokenSource cancellationSource)
     {
         bool disposeConnection = false;
+        bool reconnectWillRun = false;
         CancellationTokenSource? heartbeatLoopCancellation = null;
 
         await _connectionLock.WaitAsync();
@@ -848,12 +918,25 @@ public sealed class SkyscreenClientService : ISkyscreenClientService
 
                 disposeConnection = true;
 
+                ClearServerStatus();
+
                 StartReconnectLoopLocked();
+
+                reconnectWillRun =
+                    _automaticReconnectEnabled
+                    && _serverEndpoint is not null
+                    && !_disposed;
             }
         }
         finally
         {
             _connectionLock.Release();
+        }
+
+        if (disposeConnection && !reconnectWillRun)
+        {
+            SetConnectionState(
+                SkyscreenConnectionState.Disconnected);
         }
 
         heartbeatLoopCancellation?.Cancel();
@@ -868,6 +951,85 @@ public sealed class SkyscreenClientService : ISkyscreenClientService
         finally
         {
             cancellationSource.Dispose();
+        }
+    }
+
+    /// <summary>
+    /// Uppdaterar klientens logiska anslutningstillstånd och
+    /// signalerar ändringen till intresserade UI-komponenter.
+    /// </summary>
+    private void SetConnectionState(
+        SkyscreenConnectionState connectionState)
+    {
+        if (_connectionState == connectionState)
+        {
+            return;
+        }
+
+        _connectionState = connectionState;
+
+        try
+        {
+            ConnectionStateChanged?.Invoke(
+                this,
+                EventArgs.Empty);
+        }
+        catch (Exception exception)
+        {
+            _logger.LogError(
+                exception,
+                "Ett fel inträffade i en ConnectionStateChanged-prenumerant.");
+        }
+    }
+
+    /// <summary>
+    /// Sparar senast mottagna ServerStatus och signalerar ändringen.
+    /// </summary>
+    private void SetServerStatus(
+        ServerStatusMessage serverStatus)
+    {
+        ArgumentNullException.ThrowIfNull(serverStatus);
+
+        _serverStatus = serverStatus;
+
+        try
+        {
+            ServerStatusChanged?.Invoke(
+                this,
+                EventArgs.Empty);
+        }
+        catch (Exception exception)
+        {
+            _logger.LogError(
+                exception,
+                "Ett fel inträffade i en ServerStatusChanged-prenumerant.");
+        }
+    }
+
+    /// <summary>
+    /// Tar bort tidigare ServerStatus när den inte längre kan
+    /// betraktas som aktuell för den aktiva serveranslutningen.
+    /// </summary>
+    private void ClearServerStatus()
+    {
+        if (_serverStatus is null)
+        {
+            return;
+        }
+
+        _serverStatus = null;
+
+        try
+        {
+            ServerStatusChanged?.Invoke(
+                this,
+                EventArgs.Empty);
+        }
+        catch (Exception exception)
+        {
+            _logger.LogError(
+                exception,
+                "Ett fel inträffade i en ServerStatusChanged-prenumerant.");
         }
     }
 

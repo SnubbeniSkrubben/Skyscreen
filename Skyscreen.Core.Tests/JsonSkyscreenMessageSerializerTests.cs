@@ -82,6 +82,32 @@ public sealed class JsonSkyscreenMessageSerializerTests
     }
 
     [Fact]
+    public void ServerStatus_roundtrip_bevarar_okand_dcs_status()
+    {
+        JsonSkyscreenMessageSerializer serializer = new();
+
+        ServerStatusMessage original = new()
+        {
+            ServerVersion = "test-version",
+            IsDcsRunning = null,
+            ActiveModuleId = null
+        };
+
+        string json = serializer.Serialize(original);
+
+        SkyscreenMessage result = serializer.Deserialize(json);
+
+        ServerStatusMessage typedResult =
+            Assert.IsType<ServerStatusMessage>(result);
+
+        Assert.Equal(original.ProtocolVersion, typedResult.ProtocolVersion);
+        Assert.Equal(original.MessageType, typedResult.MessageType);
+        Assert.Equal(original.ServerVersion, typedResult.ServerVersion);
+        Assert.Null(typedResult.IsDcsRunning);
+        Assert.Null(typedResult.ActiveModuleId);
+    }
+
+    [Fact]
     public void Okand_messageType_ger_fel()
     {
         JsonSkyscreenMessageSerializer serializer = new();

@@ -9,7 +9,7 @@
 
     <Grid
         Padding="24"
-        RowDefinitions="Auto,Auto,*"
+        RowDefinitions="Auto,Auto,Auto,*"
         RowSpacing="20">
 
         <Label
@@ -19,15 +19,42 @@
             HorizontalOptions="Center"
             Text="SKYSCREEN" />
 
-        <Label
+        <Border
             Grid.Row="1"
+            Padding="16"
+            StrokeThickness="1">
+
+            <VerticalStackLayout Spacing="6">
+
+                <Label
+                    x:Name="ConnectionStatusLabel"
+                    FontAttributes="Bold"
+                    FontSize="16"
+                    Text="Anslutningsstatus: Frånkopplad" />
+
+                <Label
+                    x:Name="ServerStatusLabel"
+                    FontSize="14"
+                    Text="Serverstatus: Ingen status mottagen" />
+
+                <Label
+                    x:Name="DcsStatusLabel"
+                    FontSize="14"
+                    Text="DCS-status: Okänd" />
+
+            </VerticalStackLayout>
+
+        </Border>
+
+        <Label
+            Grid.Row="2"
             FontSize="18"
             HorizontalOptions="Center"
             Text="Välj DCS-modul" />
 
         <CollectionView
             x:Name="ModulesCollectionView"
-            Grid.Row="2"
+            Grid.Row="3"
             SelectionMode="Single"
             SelectionChanged="OnModuleSelectionChanged">
 
