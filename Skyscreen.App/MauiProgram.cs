@@ -3,6 +3,7 @@
 using Microsoft.Extensions.Logging;
 using Skyscreen.App.Services;
 using Skyscreen.App.Transport;
+using Skyscreen.Core.Discovery;
 using Skyscreen.Core.Protocol;
 
 namespace Skyscreen.App
@@ -29,6 +30,14 @@ namespace Skyscreen.App
             builder.Services.AddSingleton<
                 ISkyscreenMessageSerializer,
                 JsonSkyscreenMessageSerializer>();
+
+            builder.Services.AddSingleton<
+                IServerDiscoveryMessageSerializer,
+                JsonServerDiscoveryMessageSerializer>();
+
+            builder.Services.AddSingleton<
+                IServerDiscoveryClient,
+                UdpServerDiscoveryClient>();
 
             builder.Services.AddSingleton<
                 IClientConnectionFactory,

@@ -3,6 +3,7 @@
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Http;
 using Microsoft.Extensions.Hosting;
+using Skyscreen.Core.Discovery;
 using Skyscreen.Core.Models;
 using Skyscreen.Core.Protocol;
 using Skyscreen.Server;
@@ -19,6 +20,10 @@ builder.Services.AddSingleton<
     JsonSkyscreenMessageSerializer>();
 
 builder.Services.AddSingleton<
+    IServerDiscoveryMessageSerializer,
+    JsonServerDiscoveryMessageSerializer>();
+
+builder.Services.AddSingleton<
     WebSocketClientConnectionListener>();
 
 builder.Services.AddSingleton<IClientConnectionListener>(
@@ -27,6 +32,7 @@ builder.Services.AddSingleton<IClientConnectionListener>(
             WebSocketClientConnectionListener>());
 
 builder.Services.AddHostedService<ClientConnectionService>();
+builder.Services.AddHostedService<ServerDiscoveryService>();
 builder.Services.AddHostedService<Worker>();
 
 string webSocketPath =
