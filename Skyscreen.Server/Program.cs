@@ -7,6 +7,7 @@ using Skyscreen.Core.Discovery;
 using Skyscreen.Core.Models;
 using Skyscreen.Core.Protocol;
 using Skyscreen.Server;
+using Skyscreen.Server.Capture;
 using Skyscreen.Server.Services;
 using Skyscreen.Server.Transport;
 
@@ -23,6 +24,26 @@ builder.Services.AddSingleton<
     IServerDiscoveryMessageSerializer,
     JsonServerDiscoveryMessageSerializer>();
 
+builder.Services.Configure<PanelCaptureOptions>(
+    builder.Configuration.GetSection(
+        PanelCaptureOptions.SectionName));
+
+builder.Services.Configure<PanelCaptureDiagnosticOptions>(
+    builder.Configuration.GetSection(
+        PanelCaptureDiagnosticOptions.SectionName));
+
+builder.Services.AddSingleton<
+    IPanelCaptureRegionProvider,
+    ConfiguredPanelCaptureRegionProvider>();
+
+builder.Services.AddSingleton<
+    IPanelCaptureSource,
+    WindowsGdiPanelCaptureSource>();
+
+builder.Services.AddSingleton<
+    IPanelCaptureService,
+    PanelCaptureService>();
+
 builder.Services.AddSingleton<
     WebSocketClientConnectionListener>();
 
@@ -33,6 +54,7 @@ builder.Services.AddSingleton<IClientConnectionListener>(
 
 builder.Services.AddHostedService<ClientConnectionService>();
 builder.Services.AddHostedService<ServerDiscoveryService>();
+builder.Services.AddHostedService<PanelCaptureDiagnosticService>();
 builder.Services.AddHostedService<Worker>();
 
 string webSocketPath =
